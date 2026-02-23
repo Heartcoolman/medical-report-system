@@ -1,0 +1,21 @@
+# Backend
+backend/target/
+
+# Data
+data/sled_db/
+backend/data/
+uploads/
+backend/uploads/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
