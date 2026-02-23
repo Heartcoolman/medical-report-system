@@ -1,5 +1,16 @@
 use std::collections::HashMap;
 
+/// System prompt for merge verification LLM calls.
+pub const MERGE_VERIFY_SYSTEM_PROMPT: &str = r#"你是医疗检验报告合并判断专家。判断两份报告是否属于同一次检查的不同页面（应合并）。
+
+判断规则（按优先级）：
+1. 日期不同 → 一定不合并（不同日期的检查不可能是同一份报告的拆页）
+2. 日期相同时，检查项目大量重复 → 不合并（是同日复查）
+3. 日期相同、类型相关、项目互补无重叠 → 合并（是同一报告的不同页面）
+4. 日期相同但类型完全无关 → 不合并（是独立报告）
+
+只返回 JSON，格式：{"merge": true/false, "reason": "简短理由"}，不要有任何额外文字。"#;
+
 /// Build a few-shot LLM prompt for merge verification.
 ///
 /// This function is synchronous and only constructs the prompt string.
@@ -24,9 +35,7 @@ pub fn build_merge_verify_prompt(
     };
 
     format!(
-        r#"你是医疗检验报告合并判断专家。判断两份报告是否属于同一次检查的不同页面（应合并）。
-
-【示例1 → 合并】
+        r#"【示例1 → 合并】
 报告A: 脑脊液常规, 2024-03-15, [潘氏试验, 白细胞计数, 红细胞计数]
 报告B: 脑脊液生化, 2024-03-15, [葡萄糖, 氯, 蛋白质]
 → {{"merge": true, "reason": "同一脑脊液标本的常规+生化，项目互补"}}
@@ -45,6 +54,11 @@ pub fn build_merge_verify_prompt(
 报告A: 生化全套, 2024-03-15, [丙氨酸氨基转移酶, 天门冬氨酸氨基转移酶, 总胆红素, 肌酐, 尿素氮]
 报告B: 生化全套, 2024-03-15, [总胆固醇, 甘油三酯, 高密度脂蛋白胆固醇, 低密度脂蛋白胆固醇, 葡萄糖]
 → {{"merge": true, "reason": "同一生化全套报告拆成两页，项目互补无重叠"}}
+
+【示例5 → 不合并(日期不同)】
+报告A: 血常规, 2024-03-15, [白细胞计数, 红细胞计数, 血红蛋白, 血小板计数]
+报告B: 血常规, 2024-03-18, [白细胞计数, 红细胞计数, 血红蛋白, 血小板计数]
+→ {{"merge": false, "reason": "日期不同，是不同日期的检查"}}
 
 【待判断】
 报告A: {type_a}, {date_a}, [{items_a_str}]

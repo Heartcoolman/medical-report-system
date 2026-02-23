@@ -55,10 +55,12 @@ fn llm_sse_stream(
         let body = serde_json::json!({
             "model": INTERPRET_MODEL,
             "stream": true,
+            "temperature": 0.6,
+            "max_tokens": 2048,
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一位面向普通患者的检验报告解读助手。\n要求：\n1. 用大白话解释，像跟家人聊天一样，避免医学术语，如果必须用就加括号解释\n2. 简明扼要，不要啰嗦，每个要点1-2句话即可\n3. 纯文本输出，禁止使用任何 Markdown 格式（不要用 ** # - 等符号）\n4. 用序号和换行来分段，不要用特殊符号\n5. 结尾提醒仅供参考"
+                    "content": "你是一位面向普通患者的检验报告解读助手。\n要求：\n1. 用大白话解释，像跟家人聊天一样，避免医学术语，如果必须用就加括号解释\n2. 简明扼要，不要啰嗦，每个要点1-2句话即可\n3. 纯文本输出，禁止使用任何 Markdown 格式（不要用 ** # - 等符号）\n4. 用序号和换行来分段，不要用特殊符号\n5. 如果所有指标均正常，直接说明总体正常即可，不要硬找问题\n6. 对于严重异常值（如远超参考范围），明确建议尽快就医，不要只说'注意'\n7. 不要给出具体的药物或治疗方案建议，只建议就医方向（如看哪个科）\n8. 结尾提醒仅供参考，具体请遵医嘱"
                 },
                 { "role": "user", "content": prompt }
             ],
@@ -240,17 +242,38 @@ pub async fn interpret_single_report(
     let report = run_blocking(move || db.get_report(&id_clone)).await?;
     let report = report.ok_or_else(|| AppError::NotFound("报告不存在".to_string()))?;
 
+    // Load patient info for personalized interpretation
+    let db = state.db.clone();
+    let pid = report.patient_id.clone();
+    let patient = run_blocking(move || db.get_patient(&pid)).await?;
+
     let db = state.db.clone();
     let rid = report.id.clone();
     let items = run_blocking(move || db.get_test_items_by_report(&rid)).await?;
 
+    let patient_ctx = if let Some(ref p) = patient {
+        format!(
+            "患者：{} {}{}\n\n",
+            p.name,
+            p.gender,
+            if p.dob.is_empty() {
+                String::new()
+            } else {
+                format!(" 出生日期: {}", p.dob)
+            }
+        )
+    } else {
+        String::new()
+    };
+
     let prompt = format!(
-        "请用大白话解读这份检验报告：\n\n{}\n\n\
+        "{}请用大白话解读这份检验报告：\n\n{}\n\n\
          请简洁回答以下几点（每点1-2句话就够了）：\n\
          1. 这份报告查的是什么\n\
          2. 哪些指标不正常，通俗解释是什么意思\n\
          3. 总体情况怎么样\n\
          4. 生活上需要注意什么",
+        patient_ctx,
         format_report_block(&report, &items)
     );
 
@@ -311,9 +334,10 @@ pub async fn interpret_multi(
          以下是这位患者的 {} 份检验报告，请用大白话综合解读：\n\n{}\n\n\
          请简洁回答（每点1-2句话）：\n\
          1. 每份报告主要发现了什么\n\
-         2. 不同报告之间有没有相关的问题\n\
-         3. 整体健康状况怎么样\n\
-         4. 需要注意什么、要不要去看医生",
+         2. 不同报告之间有没有相关的问题（如肝功能和血脂都异常可能相关）\n\
+         3. 如果多份报告的同一指标持续异常，要特别指出\n\
+         4. 整体健康状况怎么样\n\
+         5. 需要注意什么、要不要去看医生",
         patient.name,
         patient.gender,
         if patient.dob.is_empty() {
@@ -364,8 +388,10 @@ pub async fn interpret_all(
          请简洁回答（每点1-2句话）：\n\
          1. 都做了哪些检查，各自发现了什么\n\
          2. 哪些指标不正常，通俗说是什么意思\n\
-         3. 总体身体状况怎么样\n\
-         4. 最需要关注什么、有什么建议",
+         3. 重点关注不同报告之间异常指标的关联性\n\
+         4. 如果同一指标在多份报告中持续异常，要特别指出\n\
+         5. 总体身体状况怎么样\n\
+         6. 最需要关注什么、有什么建议",
         patient.name,
         patient.gender,
         if patient.dob.is_empty() {
@@ -410,9 +436,10 @@ pub async fn interpret_trend(
         "以下是患者一个检查指标的多次结果：\n\n{}\n\n\
          请用大白话简洁分析（每点1-2句话）：\n\
          1. 这个指标是在升高、降低还是波动\n\
-         2. 数值正不正常，偏离多少\n\
-         3. 这种变化说明什么\n\
-         4. 需不需要注意什么",
+         2. 数值正不正常，偏离参考范围多少\n\
+         3. 结合参考范围判断是否已经回到正常区间，或者正在远离正常区间\n\
+         4. 这种变化说明什么\n\
+         5. 需不需要注意什么",
         format_trend_points(&item_name, &points)
     );
 
@@ -478,8 +505,9 @@ pub async fn interpret_trend_time(
          1. 这段时间总共查了多久、查了几次\n\
          2. 每次变化大不大、是变好还是变差\n\
          3. 有没有哪次变化特别明显\n\
-         4. 整体是在好转还是恶化\n\
-         5. 需要注意什么",
+         4. 结合参考范围判断最近一次是否已经回到正常区间\n\
+         5. 整体是在好转还是恶化\n\
+         6. 需要注意什么",
         format_trend_points(&item_name, &points),
         changes.join("\n")
     );

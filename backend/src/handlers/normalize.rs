@@ -187,18 +187,24 @@ async fn llm_normalize_item_names(
     items_by_report_type: &HashMap<String, Vec<String>>,
     existing_canonical_names: &[String],
 ) -> HashMap<String, String> {
-    let mut prompt = String::from(
-        "你是一个医学检验项目名称标准化助手。以下是算法无法识别的检验项目名称，请将它们标准化。\n\n\
+    let system_prompt = "你是一个医学检验项目名称标准化助手。将输入的检验项目名称标准化为规范名称。\n\n\
          规则：\n\
-         1. 英文缩写统一为标准中文名\n\
-         2. 旧称/俗称统一为现行标准名\n\
-         3. 忽略灵敏度/方法前缀\n\
-         4. 统一「定量」后缀\n\
-         5. 统一细微文字差异（数/计数等）\n\
+         1. 英文缩写统一为标准中文名（如 ALT → 丙氨酸氨基转移酶，WBC → 白细胞计数）\n\
+         2. 旧称/俗称统一为现行标准名（如 谷丙转氨酶 → 丙氨酸氨基转移酶）\n\
+         3. 忽略灵敏度/方法前缀和后缀（如 '超敏C反应蛋白' 和 'C反应蛋白(免疫比浊法)' 都标准化为 '超敏C反应蛋白'；'乙肝病毒DNA定量(实时荷光)' → '乙肝病毒DNA定量'）\n\
+         4. 统一「定量」后缀（如 '甲胎蛋白' 和 '甲胎蛋白定量' 统一为 '甲胎蛋白'）\n\
+         5. 统一细微文字差异（数/计数、白细胞/白血球等）\n\
          6. 修复 OCR 截断和乱码\n\
          7. 无法确定的保持原名不变\n\
-         8. 结合报告类型理解项目含义\n\n"
-    );
+         8. 结合报告类型理解项目含义\n\
+         9. 不要合并不同的检验项目（如 '直接胆红素' 和 '总胆红素' 是不同项目；'白蛋白' 和 '球蛋白' 是不同项目）\n\
+         10. 同一个原始名称必须始终映射到同一个标准名称\n\n\
+         示例：\n\
+         输入 [“血小板”, “PLT”, “尿糖定性”] → {\"血小板\": \"血小板计数\", \"PLT\": \"血小板计数\", \"尿糖定性\": \"尿糖\"}\n\
+         输入 [“谷丙转氨酶”, “总胆汁酸”] → {\"谷丙转氨酶\": \"丙氨酸氨基转移酶\", \"总胆汁酸\": \"总胆汁酸\"}\n\n\
+         返回 JSON 对象，key 是原始名称，value 是标准名称。只返回 JSON。";
+
+    let mut user_prompt = String::new();
 
     if !existing_canonical_names.is_empty() {
         let mut existing_sorted = existing_canonical_names.to_vec();
@@ -209,7 +215,7 @@ async fn llm_normalize_item_names(
             .map(|n| format!("\"{}\"", n))
             .collect::<Vec<_>>()
             .join(", ");
-        prompt.push_str(&format!(
+        user_prompt.push_str(&format!(
             "【已有标准名称】（优先匹配）：\n[{}]\n\n",
             existing_str
         ));
@@ -227,12 +233,10 @@ async fn llm_normalize_item_names(
             .map(|n| format!("\"{}\"", n))
             .collect::<Vec<_>>()
             .join(", ");
-        prompt.push_str(&format!("【{}】: [{}]\n", rt, names_str));
+        user_prompt.push_str(&format!("【{}】: [{}]\n", rt, names_str));
     }
 
-    prompt.push_str("\n返回 JSON 对象，key 是原始名称，value 是标准名称。只返回 JSON。");
-
-    match call_llm_json(client, &prompt).await {
+    match call_llm_json(client, system_prompt, &user_prompt).await {
         Ok(map) => map,
         Err(e) => {
             tracing::warn!("LLM 标准化回退失败: {}", e);
@@ -244,11 +248,16 @@ async fn llm_normalize_item_names(
 /// Low-level: call LLM and parse response as JSON object (HashMap<String, String>)
 async fn call_llm_json(
     client: &reqwest::Client,
-    prompt: &str,
+    system_prompt: &str,
+    user_prompt: &str,
 ) -> Result<HashMap<String, String>, String> {
     let body = serde_json::json!({
         "model": LLM_MODEL_FAST,
-        "messages": [{ "role": "user", "content": prompt }],
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt },
+        ],
+        "temperature": 0.0,
         "enable_thinking": false,
     });
 

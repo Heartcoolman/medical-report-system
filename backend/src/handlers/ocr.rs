@@ -382,7 +382,11 @@ pub async fn suggest_groups(
 async fn llm_verify_merge(client: &reqwest::Client, prompt: &str) -> Option<bool> {
     let body = serde_json::json!({
         "model": super::LLM_MODEL_FAST,
-        "messages": [{ "role": "user", "content": prompt }],
+        "messages": [
+            { "role": "system", "content": crate::algorithm_engine::llm_verify::MERGE_VERIFY_SYSTEM_PROMPT },
+            { "role": "user", "content": prompt },
+        ],
+        "temperature": 0.0,
         "enable_thinking": false,
     });
 
