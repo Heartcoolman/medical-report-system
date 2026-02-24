@@ -8,12 +8,14 @@ mod routes;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
+use axum::response::IntoResponse;
 use db::Database;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 
 const DB_PATH: &str = "data/yiliao.db";
 const UPLOADS_DIR: &str = "uploads";
-const LISTEN_ADDR: &str = "0.0.0.0:3001";
+const STATIC_DIR: &str = "static";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -77,18 +79,33 @@ async fn main() {
         normalize_prefetch_locks,
     };
 
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
+    let listen_addr = format!("0.0.0.0:{}", port);
+
+    // SPA fallback: serve index.html for non-API, non-uploads, non-static-file requests
+    let spa_fallback = axum::routing::get(|| async {
+        match tokio::fs::read(format!("{}/index.html", STATIC_DIR)).await {
+            Ok(contents) => axum::response::Html(contents).into_response(),
+            Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
+        }
+    });
+
     let app = routes::build_router()
+        .nest_service("/uploads", ServeDir::new(UPLOADS_DIR))
+        .fallback_service(
+            ServeDir::new(STATIC_DIR).fallback(spa_fallback),
+        )
         .layer(cors)
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(LISTEN_ADDR)
+    let listener = tokio::net::TcpListener::bind(&listen_addr)
         .await
         .unwrap_or_else(|e| {
-            eprintln!("错误: 无法绑定监听地址 {}: {}", LISTEN_ADDR, e);
+            eprintln!("错误: 无法绑定监听地址 {}: {}", listen_addr, e);
             std::process::exit(1);
         });
-    tracing::info!("后端服务运行在 http://{}", LISTEN_ADDR);
+    tracing::info!("后端服务运行在 http://{}", listen_addr);
     let shutdown = async {
         tokio::signal::ctrl_c()
             .await
