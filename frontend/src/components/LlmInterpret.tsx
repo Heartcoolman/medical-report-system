@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onCleanup } from 'solid-js'
+import { createSignal, createEffect, For, Show, onCleanup } from 'solid-js'
 import { Button, Card, CardBody, Spinner } from '@/components'
 
 export interface LlmInterpretProps {
@@ -15,8 +15,44 @@ type InterpretState = 'checking' | 'idle' | 'loading' | 'streaming' | 'done' | '
 export function LlmInterpret(props: LlmInterpretProps) {
   const [state, setState] = createSignal<InterpretState>('checking')
   const [content, setContent] = createSignal('')
+  const [points, setPoints] = createSignal<string[] | null>(null)
   const [error, setError] = createSignal('')
   let eventSource: EventSource | null = null
+
+  function extractPoints(value: unknown): string[] | null {
+    if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+      return value as string[]
+    }
+    if (value && typeof value === 'object' && 'points' in value) {
+      const pts = (value as { points?: unknown }).points
+      if (Array.isArray(pts) && pts.every((v) => typeof v === 'string')) {
+        return pts as string[]
+      }
+    }
+    return null
+  }
+
+  function applyInterpretation(value: unknown) {
+    const pts = extractPoints(value)
+    if (pts) {
+      setPoints(pts)
+      setContent('')
+      return
+    }
+
+    if (typeof value === 'string') {
+      setPoints(null)
+      setContent(value)
+      return
+    }
+
+    setPoints(null)
+    try {
+      setContent(JSON.stringify(value))
+    } catch {
+      setContent(String(value))
+    }
+  }
 
   function cleanup() {
     if (eventSource) {
@@ -38,6 +74,7 @@ export function LlmInterpret(props: LlmInterpretProps) {
     const url = props.url
     cleanup()
     setContent('')
+    setPoints(null)
     setError('')
 
     const cache = cacheUrl()
@@ -55,11 +92,11 @@ export function LlmInterpret(props: LlmInterpretProps) {
 
     fetch(cache)
       .then(res => res.json())
-      .then((json: { success: boolean; data: { content: string; created_at: string } | null }) => {
+      .then((json: { success: boolean; data: { content: unknown; created_at: string } | null }) => {
         // Only apply if url hasn't changed while we were fetching
         if (props.url !== url) return
-        if (json.success && json.data && json.data.content) {
-          setContent(json.data.content)
+        if (json.success && json.data && json.data.content !== undefined && json.data.content !== null) {
+          applyInterpretation(json.data.content)
           setState('done')
         } else if (props.autoStart) {
           start()
@@ -82,6 +119,7 @@ export function LlmInterpret(props: LlmInterpretProps) {
   function start() {
     cleanup()
     setContent('')
+    setPoints(null)
     setError('')
     setState('loading')
 
@@ -106,6 +144,22 @@ export function LlmInterpret(props: LlmInterpretProps) {
         return
       }
       setState('streaming')
+
+      const trimmed = String(data ?? '').trim()
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed) as unknown
+          const pts = extractPoints(parsed)
+          if (pts) {
+            setPoints(pts)
+            setContent('')
+            return
+          }
+        } catch {
+          // fall back to plain text streaming
+        }
+      }
+
       setContent((prev) => prev + data)
     }
 
@@ -172,12 +226,30 @@ export function LlmInterpret(props: LlmInterpretProps) {
                 </Button>
               </Show>
             </div>
-            <div class="text-sm text-content leading-relaxed whitespace-pre-wrap break-words">
-              {content()}
-              <Show when={state() === 'streaming'}>
-                <span class="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-middle" />
-              </Show>
-            </div>
+            <Show
+              when={points() && points()!.length > 0}
+              fallback={
+                <div class="text-sm text-content leading-relaxed whitespace-pre-wrap break-words">
+                  {content()}
+                  <Show when={state() === 'streaming'}>
+                    <span class="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-middle" />
+                  </Show>
+                </div>
+              }
+            >
+              <div class="text-sm text-content leading-relaxed break-words space-y-2">
+                <For each={points() ?? []}>
+                  {(p, idx) => (
+                    <div class="whitespace-pre-wrap">
+                      {idx() + 1}. {p}
+                    </div>
+                  )}
+                </For>
+                <Show when={state() === 'streaming'}>
+                  <span class="inline-block w-1.5 h-4 bg-accent animate-pulse ml-0.5 align-middle" />
+                </Show>
+              </div>
+            </Show>
             <Show when={state() === 'done'}>
               <div class="text-xs text-content-tertiary border-t border-border pt-2 mt-2">
                 以上解读由 AI 生成，仅供参考，不能替代医生的专业诊断。

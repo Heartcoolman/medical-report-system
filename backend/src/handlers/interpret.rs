@@ -60,7 +60,7 @@ fn llm_sse_stream(
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一位面向普通患者的检验报告解读助手。\n要求：\n1. 用大白话解释，像跟家人聊天一样，避免医学术语，如果必须用就加括号解释\n2. 简明扼要，不要啰嗦，每个要点1-2句话即可\n3. 纯文本输出，禁止使用任何 Markdown 格式（不要用 ** # - 等符号）\n4. 用序号和换行来分段，不要用特殊符号\n5. 如果所有指标均正常，直接说明总体正常即可，不要硬找问题\n6. 对于严重异常值（如远超参考范围），明确建议尽快就医，不要只说'注意'\n7. 不要给出具体的药物或治疗方案建议，只建议就医方向（如看哪个科）\n8. 结尾提醒仅供参考，具体请遵医嘱"
+                    "content": "你是一位面向普通患者的检验报告解读助手。\n\n请严格只输出一个 JSON 数组（数组元素为字符串），不要输出任何额外文字、不要用 Markdown 代码块。\nJSON 格式如下：\n[\n  \"要点1（1-2句话，大白话）\",\n  \"要点2（1-2句话，大白话）\"\n]\n\n要求：\n1. 数组中每个字符串都是一个独立要点，1-2句话即可\n2. 避免医学术语；如必须使用，需在括号中用通俗话解释\n3. 如果所有指标均正常，数组里直接说明总体正常即可，不要硬找问题\n4. 对于严重异常值（如远超参考范围），要明确建议尽快就医（说明建议就诊科室方向即可）\n5. 不要给出具体药物或治疗方案\n6. 结尾请在数组最后追加一条免责声明：以上解读仅供参考，具体请遵医嘱"
                 },
                 { "role": "user", "content": prompt }
             ],
@@ -95,7 +95,7 @@ fn llm_sse_stream(
 
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
-        let mut accumulated = String::new();
+        let mut accumulated_raw = String::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = match chunk {
@@ -119,17 +119,37 @@ fn llm_sse_stream(
 
                 let data = line.strip_prefix("data:").unwrap().trim();
                 if data == "[DONE]" {
+                    let parsed = crate::handlers::extract_json_block(&accumulated_raw)
+                        .and_then(|json_str| {
+                            serde_json::from_str::<serde_json::Value>(&json_str)
+                                .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| json_str))
+                                .map_err(|e| format!("解析解读 JSON 失败: {}, 原始: {}", e, accumulated_raw))
+                        });
+
                     // Save accumulated content to DB
                     if let Some((ref db, ref report_id)) = save_to {
-                        if !accumulated.is_empty() {
-                            let db = db.clone();
-                            let rid = report_id.clone();
-                            let content = accumulated.clone();
-                            if let Err(e) = run_blocking(move || db.save_interpretation(&rid, &content)).await {
-                                tracing::error!("[interpret] 保存解读缓存失败: {}", e);
-                            } else {
-                                tracing::info!("[interpret] 解读结果已缓存, report_id={}", report_id);
+                        if let Ok(content) = parsed.clone() {
+                            if !content.is_empty() {
+                                let db = db.clone();
+                                let rid = report_id.clone();
+                                if let Err(e) = run_blocking(move || db.save_interpretation(&rid, &content)).await {
+                                    tracing::error!("[interpret] 保存解读缓存失败: {}", e);
+                                } else {
+                                    tracing::info!("[interpret] 解读结果已缓存, report_id={}", report_id);
+                                }
                             }
+                        } else if !accumulated_raw.is_empty() {
+                            tracing::warn!("[interpret] 解读 JSON 解析失败, report_id={}", report_id);
+                        }
+                    }
+
+                    match parsed {
+                        Ok(json) => {
+                            yield Ok(Event::default().data(json));
+                        }
+                        Err(msg) => {
+                            tracing::error!("[interpret] {}", msg);
+                            yield Ok(Event::default().data(format!("[错误] {}", msg)));
                         }
                     }
                     yield Ok(Event::default().data("[DONE]"));
@@ -144,11 +164,9 @@ fn llm_sse_stream(
                         .and_then(|d| d.get("content"))
                         .and_then(|c| c.as_str())
                     {
-                        // Strip <think> blocks and markdown formatting
-                        let cleaned = strip_markdown(&super::strip_think_blocks(content));
+                        let cleaned = super::strip_think_blocks(content);
                         if !cleaned.is_empty() {
-                            accumulated.push_str(&cleaned);
-                            yield Ok(Event::default().data(cleaned));
+                            accumulated_raw.push_str(&cleaned);
                         }
                     }
                 }
@@ -156,13 +174,35 @@ fn llm_sse_stream(
         }
 
         // Save on stream end (even without [DONE])
-        if let Some((ref db, ref report_id)) = save_to {
-            if !accumulated.is_empty() {
-                let db = db.clone();
-                let rid = report_id.clone();
-                let content = accumulated.clone();
-                if let Err(e) = run_blocking(move || db.save_interpretation(&rid, &content)).await {
-                    tracing::error!("[interpret] 保存解读缓存失败: {}", e);
+        if !accumulated_raw.is_empty() {
+            let parsed = crate::handlers::extract_json_block(&accumulated_raw)
+                .and_then(|json_str| {
+                    serde_json::from_str::<serde_json::Value>(&json_str)
+                        .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| json_str))
+                        .map_err(|e| format!("解析解读 JSON 失败: {}, 原始: {}", e, accumulated_raw))
+                });
+
+            if let Some((ref db, ref report_id)) = save_to {
+                if let Ok(content) = parsed.clone() {
+                    if !content.is_empty() {
+                        let db = db.clone();
+                        let rid = report_id.clone();
+                        if let Err(e) = run_blocking(move || db.save_interpretation(&rid, &content)).await {
+                            tracing::error!("[interpret] 保存解读缓存失败: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("[interpret] 解读 JSON 解析失败, report_id={}", report_id);
+                }
+            }
+
+            match parsed {
+                Ok(json) => {
+                    yield Ok(Event::default().data(json));
+                }
+                Err(msg) => {
+                    tracing::error!("[interpret] {}", msg);
+                    yield Ok(Event::default().data(format!("[错误] {}", msg)));
                 }
             }
         }
@@ -267,12 +307,8 @@ pub async fn interpret_single_report(
     };
 
     let prompt = format!(
-        "{}请用大白话解读这份检验报告：\n\n{}\n\n\
-         请简洁回答以下几点（每点1-2句话就够了）：\n\
-         1. 这份报告查的是什么\n\
-         2. 哪些指标不正常，通俗解释是什么意思\n\
-         3. 总体情况怎么样\n\
-         4. 生活上需要注意什么",
+        "{}请用大白话解读这份检验报告，并按 system 要求输出 JSON 数组（要点字符串）。\n\n{}\n\n\
+         请在要点中覆盖：这份报告主要查什么；哪些指标不正常及通俗解释；总体情况；生活上需要注意什么。",
         patient_ctx,
         format_report_block(&report, &items)
     );
@@ -331,13 +367,8 @@ pub async fn interpret_multi(
 
     let prompt = format!(
         "患者：{} {} {}\n\n\
-         以下是这位患者的 {} 份检验报告，请用大白话综合解读：\n\n{}\n\n\
-         请简洁回答（每点1-2句话）：\n\
-         1. 每份报告主要发现了什么\n\
-         2. 不同报告之间有没有相关的问题（如肝功能和血脂都异常可能相关）\n\
-         3. 如果多份报告的同一指标持续异常，要特别指出\n\
-         4. 整体健康状况怎么样\n\
-         5. 需要注意什么、要不要去看医生",
+         以下是这位患者的 {} 份检验报告，请用大白话综合解读，并按 system 要求输出 JSON 数组（要点字符串）：\n\n{}\n\n\
+         请在要点中覆盖：每份报告主要发现；不同报告之间的关联；同一指标是否持续异常；整体健康状况；需要注意什么以及是否建议就医（就诊方向即可）。",
         patient.name,
         patient.gender,
         if patient.dob.is_empty() {
@@ -384,14 +415,8 @@ pub async fn interpret_all(
 
     let prompt = format!(
         "患者：{} {} {}\n\n\
-         以下是这位患者的全部 {} 份检验报告，请用大白话全面解读：\n\n{}\n\n\
-         请简洁回答（每点1-2句话）：\n\
-         1. 都做了哪些检查，各自发现了什么\n\
-         2. 哪些指标不正常，通俗说是什么意思\n\
-         3. 重点关注不同报告之间异常指标的关联性\n\
-         4. 如果同一指标在多份报告中持续异常，要特别指出\n\
-         5. 总体身体状况怎么样\n\
-         6. 最需要关注什么、有什么建议",
+         以下是这位患者的全部 {} 份检验报告，请用大白话全面解读，并按 system 要求输出 JSON 数组（要点字符串）：\n\n{}\n\n\
+         请在要点中覆盖：都做了哪些检查及主要发现；哪些指标不正常及通俗解释；异常指标在不同报告间的关联；同一指标是否持续异常；总体状况；最需要关注什么以及建议（就医方向即可）。",
         patient.name,
         patient.gender,
         if patient.dob.is_empty() {
@@ -433,13 +458,8 @@ pub async fn interpret_trend(
     }
 
     let prompt = format!(
-        "以下是患者一个检查指标的多次结果：\n\n{}\n\n\
-         请用大白话简洁分析（每点1-2句话）：\n\
-         1. 这个指标是在升高、降低还是波动\n\
-         2. 数值正不正常，偏离参考范围多少\n\
-         3. 结合参考范围判断是否已经回到正常区间，或者正在远离正常区间\n\
-         4. 这种变化说明什么\n\
-         5. 需不需要注意什么",
+        "以下是患者一个检查指标的多次结果，请按 system 要求输出 JSON 数组（要点字符串），用大白话简洁分析：\n\n{}\n\n\
+         请在要点中覆盖：趋势方向（升高/降低/波动）；是否异常及偏离程度；是否回到/远离正常区间；这种变化可能说明什么；需不需要注意或就医方向。",
         format_trend_points(&item_name, &points)
     );
 
@@ -498,16 +518,10 @@ pub async fn interpret_trend_time(
     }
 
     let prompt = format!(
-        "以下是患者一个检查指标在不同时间的结果，请重点说说变化情况：\n\n\
+        "以下是患者一个检查指标在不同时间的结果，请按 system 要求输出 JSON 数组（要点字符串），重点说说变化情况：\n\n\
          {}\n\n\
          各次变化：\n{}\n\n\
-         请用大白话简洁分析（每点1-2句话）：\n\
-         1. 这段时间总共查了多久、查了几次\n\
-         2. 每次变化大不大、是变好还是变差\n\
-         3. 有没有哪次变化特别明显\n\
-         4. 结合参考范围判断最近一次是否已经回到正常区间\n\
-         5. 整体是在好转还是恶化\n\
-         6. 需要注意什么",
+         请在要点中覆盖：这段时间查了多久/几次；每次变化是否明显、是变好还是变差；有没有特别明显的一次；最近一次是否回到正常区间；整体趋势（好转/恶化/波动）；需要注意或就医方向。",
         format_trend_points(&item_name, &points),
         changes.join("\n")
     );

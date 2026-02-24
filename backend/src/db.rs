@@ -1,7 +1,8 @@
 use crate::error::AppError;
 use crate::models::{
-    EditLog, ItemStatus, PaginatedList, Patient, PatientWithStats, Report, ReportSummary,
-    TemperatureRecord, TestItem, TrendItemInfo, TrendPoint,
+    ConfirmExpenseItemReq, DailyExpense, DailyExpenseDetail, DailyExpenseSummary, EditLog,
+    ExpenseCategory, ExpenseItem, ItemStatus, PaginatedList, Patient, PatientWithStats, Report,
+    ReportSummary, TemperatureRecord, TestItem, TrendItemInfo, TrendPoint,
 };
 use pinyin::ToPinyin;
 use sled::Db;
@@ -72,6 +73,10 @@ impl Database {
         db.open_tree("edit_logs")?;
         db.open_tree("idx_report_edit_logs")?;
         db.open_tree("idx_edit_logs_ordered")?;
+        db.open_tree("daily_expenses")?;
+        db.open_tree("expense_items")?;
+        db.open_tree("idx_patient_expenses")?;
+        db.open_tree("idx_expense_items")?;
         Ok(Self { db: Arc::new(db) })
     }
 
@@ -132,6 +137,9 @@ impl Database {
 
         // Delete temperature records first
         self.delete_temperatures_by_patient(id)?;
+
+        // Delete expense records
+        self.delete_expenses_by_patient(id)?;
 
         // Collect report IDs first
         let report_ids = self.list_report_ids_by_patient(id)?;
@@ -1345,74 +1353,51 @@ impl Database {
     }
 }
 
-/// Curated rules for medical report type categorization.
-/// Each rule: (keyword_to_match, canonical_category_name).
-/// Rules are checked in order; longer/more-specific keywords should come first
-/// to avoid shadowing by shorter ones.
+/// Fallback keyword rules for report type categorization.
+/// Used only when the authoritative taxonomy (`report_types.json`) has no match.
+/// Category names are aligned with the taxonomy for consistency.
 const REPORT_CATEGORY_RULES: &[(&str, &str)] = &[
-    // 脑脊液
-    ("脑脊液", "脑脊液"),
-    // 尿液
-    ("尿常规", "尿液"),
-    ("尿液", "尿液"),
-    ("尿沉渣", "尿液"),
-    // 粪便
-    ("粪便", "粪便"),
-    ("大便", "粪便"),
-    // 血常规
-    ("血常规", "血常规"),
-    ("血细胞", "血常规"),
-    ("全血细胞", "血常规"),
-    // 凝血
-    ("凝血", "凝血功能"),
-    // 肝功能
-    ("肝功", "肝功能"),
-    // 肾功能
-    ("肾功", "肾功能"),
-    // 甲状腺
-    ("甲状腺", "甲状腺功能"),
-    ("甲功", "甲状腺功能"),
-    // 血脂
-    ("血脂", "血脂"),
-    // 血糖
-    ("血糖", "血糖"),
-    ("糖化", "血糖"),
-    // 电解质
-    ("电解质", "电解质"),
-    // 乙肝
-    ("乙肝", "乙肝"),
-    ("乙型肝炎", "乙肝"),
-    ("HBV", "乙肝"),
-    // 感染标志物
-    ("感染", "感染标志物"),
-    // 免疫球蛋白
-    ("免疫球蛋白", "免疫球蛋白"),
-    // 补体
-    ("补体", "补体"),
-    // 血沉
-    ("血沉", "血沉"),
-    ("红细胞沉降", "血沉"),
-    // 血气
-    ("血气", "血气分析"),
-    // 生化
-    ("生化", "生化"),
-    // 肝纤维化
-    ("肝纤维", "肝纤维化"),
-    // 肿瘤标志物
-    ("肿瘤", "肿瘤标志物"),
-    // 白带
-    ("白带", "白带常规"),
-    // 心肌
-    ("心肌", "心肌标志物"),
-    // C反应蛋白
-    ("C反应蛋白", "C反应蛋白"),
-    ("CRP", "C反应蛋白"),
+    ("脑脊液", "脑脊液检查"),
+    ("尿常规", "尿常规检查"),
+    ("尿液", "尿常规检查"),
+    ("尿沉渣", "尿常规检查"),
+    ("粪便", "粪便常规检查"),
+    ("大便", "粪便常规检查"),
+    ("血常规", "血常规检查"),
+    ("血细胞", "血常规检查"),
+    ("全血细胞", "血常规检查"),
+    ("凝血", "凝血功能检查"),
+    ("肝功", "肝功能检查"),
+    ("肾功", "肾功能检查"),
+    ("甲状腺", "甲状腺功能检查"),
+    ("甲功", "甲状腺功能检查"),
+    ("血脂", "血脂检查"),
+    ("血糖", "血糖检查"),
+    ("糖化", "血糖检查"),
+    ("电解质", "电解质检查"),
+    ("乙肝", "乙肝检查"),
+    ("乙型肝炎", "乙肝检查"),
+    ("HBV", "乙肝检查"),
+    ("感染", "感染标志物检查"),
+    ("免疫球蛋白", "免疫球蛋白检查"),
+    ("补体", "免疫球蛋白检查"),
+    ("血沉", "感染标志物检查"),
+    ("红细胞沉降", "感染标志物检查"),
+    ("血气", "血气分析检查"),
+    ("生化", "生化检查"),
+    ("肝纤维", "肝纤维化检查"),
+    ("肿瘤", "肿瘤标志物检查"),
+    ("白带", "体液检查"),
+    ("心肌", "心肌标志物检查"),
+    ("C反应蛋白", "感染标志物检查"),
+    ("CRP", "感染标志物检查"),
 ];
 
 /// Group similar report_types into categories.
 ///
-/// 1. Try matching against a curated dictionary of medical report type keywords.
-/// 2. For unmatched types, fall back to common-prefix grouping (min 3 Chinese chars).
+/// 1. Try the authoritative taxonomy dictionary (`report_types.json`).
+/// 2. Fall back to keyword rules for types not covered by taxonomy.
+/// 3. For still-unmatched types, use common-prefix grouping (min 3 Chinese chars).
 fn compute_report_categories(report_types: &[String]) -> std::collections::HashMap<String, String> {
     let mut mapping = std::collections::HashMap::new();
     let mut unmatched: Vec<String> = Vec::new();
@@ -1422,8 +1407,15 @@ fn compute_report_categories(report_types: &[String]) -> std::collections::HashM
     unique.sort();
     unique.dedup();
 
-    // Phase 1: curated dictionary lookup
+    // Phase 1: authoritative taxonomy lookup (report_types.json)
+    // Phase 2: fallback keyword rules
     for rt in &unique {
+        // Try taxonomy first
+        if let Some(cat) = crate::algorithm_engine::report_taxonomy::lookup_category_pub(rt) {
+            mapping.insert((*rt).clone(), cat);
+            continue;
+        }
+        // Fallback: keyword rules
         let upper = rt.to_uppercase();
         let mut found = false;
         for &(keyword, category) in REPORT_CATEGORY_RULES {
@@ -1479,6 +1471,204 @@ fn normalize_trend_item_name(name: &str) -> String {
     crate::algorithm_engine::name_normalizer::normalize_for_trend(name)
 }
 
+impl Database {
+    // --- Daily Expense CRUD ---
+
+    pub fn create_expense(
+        &self,
+        expense: &DailyExpense,
+        items: &[ExpenseItem],
+    ) -> Result<(), AppError> {
+        let exp_tree = self.db.open_tree("daily_expenses")?;
+        let item_tree = self.db.open_tree("expense_items")?;
+        let idx_pe = self.db.open_tree("idx_patient_expenses")?;
+        let idx_ei = self.db.open_tree("idx_expense_items")?;
+
+        let exp_val = serde_json::to_vec(expense)?;
+        let exp_id_bytes = expense.id.as_bytes().to_vec();
+        let idx_key = format!("{}:{}:{}", expense.patient_id, expense.expense_date, expense.id);
+        let idx_key_bytes = idx_key.into_bytes();
+
+        let mut item_vals: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::with_capacity(items.len());
+        for item in items {
+            let iv = serde_json::to_vec(item)?;
+            let iid = item.id.as_bytes().to_vec();
+            let iidx = format!("{}:{}", expense.id, item.id).into_bytes();
+            item_vals.push((iid, iv, iidx));
+        }
+
+        vec![exp_tree, item_tree, idx_pe, idx_ei]
+            .transaction(|tx_trees| {
+                tx_trees[0].insert(exp_id_bytes.as_slice(), exp_val.as_slice())?;
+                tx_trees[2].insert(idx_key_bytes.as_slice(), b"" as &[u8])?;
+                for (iid, iv, iidx) in &item_vals {
+                    tx_trees[1].insert(iid.as_slice(), iv.as_slice())?;
+                    tx_trees[3].insert(iidx.as_slice(), b"" as &[u8])?;
+                }
+                Ok(())
+            })
+            .map_err(|e: sled::transaction::TransactionError| {
+                AppError::Internal(format!("创建消费记录事务失败: {}", e))
+            })?;
+        Ok(())
+    }
+
+    pub fn list_expenses_by_patient(
+        &self,
+        patient_id: &str,
+    ) -> Result<Vec<DailyExpenseSummary>, AppError> {
+        let idx = self.db.open_tree("idx_patient_expenses")?;
+        let exp_tree = self.db.open_tree("daily_expenses")?;
+        let idx_ei = self.db.open_tree("idx_expense_items")?;
+        let item_tree = self.db.open_tree("expense_items")?;
+        let prefix = format!("{}:", patient_id);
+        let mut summaries = Vec::new();
+
+        for entry in idx.scan_prefix(prefix.as_bytes()) {
+            let (k, _) = entry?;
+            let key_str = String::from_utf8_lossy(&k);
+            let parts: Vec<&str> = key_str.split(':').collect();
+            if parts.len() >= 3 {
+                let expense_id = parts[2];
+                if let Some(val) = exp_tree.get(expense_id.as_bytes())? {
+                    let expense: DailyExpense = serde_json::from_slice(&val)?;
+
+                    let item_prefix = format!("{}:", expense_id);
+                    let mut item_count = 0usize;
+                    let mut drug_count = 0usize;
+                    let mut test_count = 0usize;
+                    let mut treatment_count = 0usize;
+
+                    for ie in idx_ei.scan_prefix(item_prefix.as_bytes()) {
+                        let (ik, _) = ie?;
+                        let ik_str = String::from_utf8_lossy(&ik);
+                        if let Some((_, item_id)) = ik_str.split_once(':') {
+                            if let Some(iv) = item_tree.get(item_id.as_bytes())? {
+                                let item: ExpenseItem = serde_json::from_slice(&iv)?;
+                                item_count += 1;
+                                match item.category {
+                                    ExpenseCategory::Drug => drug_count += 1,
+                                    ExpenseCategory::Test => test_count += 1,
+                                    ExpenseCategory::Treatment => treatment_count += 1,
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+
+                    summaries.push(DailyExpenseSummary {
+                        expense,
+                        item_count,
+                        drug_count,
+                        test_count,
+                        treatment_count,
+                    });
+                }
+            }
+        }
+
+        summaries.sort_by(|a, b| b.expense.expense_date.cmp(&a.expense.expense_date));
+        Ok(summaries)
+    }
+
+    pub fn get_expense_detail(&self, id: &str) -> Result<Option<DailyExpenseDetail>, AppError> {
+        let exp_tree = self.db.open_tree("daily_expenses")?;
+        let idx_ei = self.db.open_tree("idx_expense_items")?;
+        let item_tree = self.db.open_tree("expense_items")?;
+
+        let expense: DailyExpense = match exp_tree.get(id.as_bytes())? {
+            Some(val) => serde_json::from_slice(&val)?,
+            None => return Ok(None),
+        };
+
+        let prefix = format!("{}:", id);
+        let mut items = Vec::new();
+        for entry in idx_ei.scan_prefix(prefix.as_bytes()) {
+            let (k, _) = entry?;
+            let key_str = String::from_utf8_lossy(&k);
+            if let Some((_, item_id)) = key_str.split_once(':') {
+                if let Some(iv) = item_tree.get(item_id.as_bytes())? {
+                    let item: ExpenseItem = serde_json::from_slice(&iv)?;
+                    items.push(item);
+                }
+            }
+        }
+
+        Ok(Some(DailyExpenseDetail { expense, items }))
+    }
+
+    pub fn delete_expense(&self, id: &str) -> Result<(), AppError> {
+        let exp_tree = self.db.open_tree("daily_expenses")?;
+        let item_tree = self.db.open_tree("expense_items")?;
+        let idx_pe = self.db.open_tree("idx_patient_expenses")?;
+        let idx_ei = self.db.open_tree("idx_expense_items")?;
+
+        // Find patient_id for index cleanup
+        let pe_idx_key = if let Some(val) = exp_tree.get(id.as_bytes())? {
+            let expense: DailyExpense = serde_json::from_slice(&val)?;
+            let key = format!(
+                "{}:{}:{}",
+                expense.patient_id, expense.expense_date, expense.id
+            );
+            Some(key.into_bytes())
+        } else {
+            return Err(AppError::NotFound("消费记录不存在".to_string()));
+        };
+
+        // Collect expense item keys
+        let prefix = format!("{}:", id);
+        let mut item_ids: Vec<Vec<u8>> = Vec::new();
+        let mut ei_idx_keys: Vec<Vec<u8>> = Vec::new();
+        for entry in idx_ei.scan_prefix(prefix.as_bytes()) {
+            let (k, _) = entry?;
+            let key_str = String::from_utf8_lossy(&k);
+            if let Some((_, item_id)) = key_str.split_once(':') {
+                item_ids.push(item_id.as_bytes().to_vec());
+            }
+            ei_idx_keys.push(k.to_vec());
+        }
+
+        let id_bytes = id.as_bytes().to_vec();
+
+        vec![exp_tree, item_tree, idx_pe, idx_ei]
+            .transaction(|tx_trees| {
+                tx_trees[0].remove(id_bytes.as_slice())?;
+                if let Some(ref pk) = pe_idx_key {
+                    tx_trees[2].remove(pk.as_slice())?;
+                }
+                for iid in &item_ids {
+                    tx_trees[1].remove(iid.as_slice())?;
+                }
+                for eik in &ei_idx_keys {
+                    tx_trees[3].remove(eik.as_slice())?;
+                }
+                Ok(())
+            })
+            .map_err(|e: sled::transaction::TransactionError| {
+                AppError::Internal(format!("删除消费记录事务失败: {}", e))
+            })?;
+        Ok(())
+    }
+
+    fn delete_expenses_by_patient(&self, patient_id: &str) -> Result<(), AppError> {
+        let idx = self.db.open_tree("idx_patient_expenses")?;
+        let prefix = format!("{}:", patient_id);
+        let mut expense_ids: Vec<String> = Vec::new();
+        for entry in idx.scan_prefix(prefix.as_bytes()) {
+            let (k, _) = entry?;
+            let key_str = String::from_utf8_lossy(&k);
+            let parts: Vec<&str> = key_str.split(':').collect();
+            if parts.len() >= 3 {
+                expense_ids.push(parts[2].to_string());
+            }
+        }
+        for eid in expense_ids {
+            self.delete_expense(&eid)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1494,12 +1684,12 @@ mod tests {
             "血常规".to_string(),
         ];
         let map = compute_report_categories(&types);
-        // All 脑脊液* should share one category via curated dictionary
-        assert_eq!(map["脑脊液常规"], "脑脊液");
-        assert_eq!(map["脑脊液生化"], "脑脊液");
-        assert_eq!(map["脑脊液免疫球蛋白"], "脑脊液");
+        // All 脑脊液* should share one category via taxonomy
+        assert_eq!(map["脑脊液常规"], "脑脊液检查");
+        assert_eq!(map["脑脊液生化"], "脑脊液检查");
+        assert_eq!(map["脑脊液免疫球蛋白"], "脑脊液检查");
         // 血常规 maps to its own category
-        assert_eq!(map["血常规"], "血常规");
+        assert_eq!(map["血常规"], "血常规检查");
     }
 
     #[test]
@@ -1518,9 +1708,9 @@ mod tests {
         ];
         let map = compute_report_categories(&types);
         // All thyroid function variants should map to the same category
-        assert_eq!(map["甲功三项"], "甲状腺功能");
-        assert_eq!(map["甲状腺功能"], "甲状腺功能");
-        assert_eq!(map["甲功五项"], "甲状腺功能");
+        assert_eq!(map["甲功三项"], "甲状腺功能检查");
+        assert_eq!(map["甲状腺功能"], "甲状腺功能检查");
+        assert_eq!(map["甲功五项"], "甲状腺功能检查");
     }
 
     #[test]
@@ -1531,17 +1721,17 @@ mod tests {
             "肝功八项".to_string(),
         ];
         let map = compute_report_categories(&types);
-        assert_eq!(map["肝功能"], "肝功能");
-        assert_eq!(map["肝功十项"], "肝功能");
-        assert_eq!(map["肝功八项"], "肝功能");
+        assert_eq!(map["肝功能"], "肝功能检查");
+        assert_eq!(map["肝功十项"], "肝功能检查");
+        assert_eq!(map["肝功八项"], "肝功能检查");
     }
 
     #[test]
     fn categories_urine_synonyms() {
         let types = vec!["尿常规".to_string(), "尿液分析".to_string()];
         let map = compute_report_categories(&types);
-        assert_eq!(map["尿常规"], "尿液");
-        assert_eq!(map["尿液分析"], "尿液");
+        assert_eq!(map["尿常规"], "尿常规检查");
+        assert_eq!(map["尿液分析"], "尿常规检查");
     }
 
     #[test]
@@ -1564,10 +1754,17 @@ mod tests {
     // --- normalize_trend_item_name ---
 
     #[test]
-    fn normalize_strips_sensitivity_prefix() {
-        assert_eq!(normalize_trend_item_name("超敏C反应蛋白"), "C反应蛋白");
-        assert_eq!(normalize_trend_item_name("高敏C反应蛋白"), "C反应蛋白");
-        assert_eq!(normalize_trend_item_name("超高敏C反应蛋白"), "C反应蛋白");
+    fn normalize_preserves_sensitivity_prefix_via_dict() {
+        // All hs-CRP variants are clinical synonyms — dictionary maps them to "超敏C反应蛋白"
+        assert_eq!(normalize_trend_item_name("超敏C反应蛋白"), "超敏C反应蛋白");
+        assert_eq!(normalize_trend_item_name("高敏C反应蛋白"), "超敏C反应蛋白");
+        assert_eq!(normalize_trend_item_name("超高敏C反应蛋白"), "超敏C反应蛋白");
+        // Regular CRP stays distinct
+        assert_eq!(normalize_trend_item_name("C反应蛋白"), "C反应蛋白");
+        assert_ne!(
+            normalize_trend_item_name("超敏C反应蛋白"),
+            normalize_trend_item_name("C反应蛋白")
+        );
     }
 
     #[test]
@@ -1612,7 +1809,8 @@ mod tests {
     #[test]
     fn normalize_strips_body_fluid_prefix() {
         assert_eq!(normalize_trend_item_name("脑脊液氯"), "氯");
-        assert_eq!(normalize_trend_item_name("尿液白细胞"), "白细胞");
+        // After stripping "尿液", "白细胞" is resolved via synonym dictionary to canonical form
+        assert_eq!(normalize_trend_item_name("尿液白细胞"), "白细胞计数");
     }
 
     #[test]
@@ -1623,6 +1821,190 @@ mod tests {
     #[test]
     fn normalize_plain_name_unchanged() {
         assert_eq!(normalize_trend_item_name("白细胞计数"), "白细胞计数");
+    }
+
+    // --- 实战混乱分类测试 ---
+
+    /// 模拟真实场景：多家医院、多种命名风格的报告类型 → 分类引擎能否正确归组
+    #[test]
+    fn chaos_report_type_classification() {
+        let types = vec![
+            // 肝功能变体（应归为同一组）
+            "肝功能".to_string(),
+            "肝功十一项".to_string(),
+            "肝功八项".to_string(),
+            "肝功全套".to_string(),
+            "肝功能检测".to_string(),
+            // 血常规变体（应归为同一组）
+            "血常规".to_string(),
+            "血常规五分类".to_string(),
+            "血细胞分析".to_string(),
+            "全血细胞计数".to_string(),
+            "血液分析".to_string(),
+            // 甲功变体（应归为同一组）
+            "甲功三项".to_string(),
+            "甲功五项".to_string(),
+            "甲状腺功能".to_string(),
+            "甲状腺功能全套".to_string(),
+            // 凝血变体（应归为同一组）
+            "凝血四项".to_string(),
+            "凝血功能".to_string(),
+            "凝血全套".to_string(),
+            "凝血七项".to_string(),
+            // 乙肝变体（应归为同一组）
+            "乙肝五项".to_string(),
+            "乙肝两对半".to_string(),
+            "乙肝病毒DNA".to_string(),
+            // 混淆项：不应被错误合并
+            "肾功能".to_string(),
+            "血脂四项".to_string(),
+            "尿常规".to_string(),
+            "生化全套".to_string(),
+        ];
+
+        let map = compute_report_categories(&types);
+
+        // 打印分类结果方便调试
+        let mut sorted: Vec<_> = map.iter().collect();
+        sorted.sort_by_key(|(k, _)| k.clone());
+        eprintln!("\n===== 报告类型分类结果 =====");
+        for (rt, cat) in &sorted {
+            eprintln!("  {:20} → {}", rt, cat);
+        }
+
+        // 验证：同组报告归到同一分类
+        let liver = &map["肝功能"];
+        assert_eq!(&map["肝功十一项"], liver, "肝功十一项 应与 肝功能 同组");
+        assert_eq!(&map["肝功八项"], liver, "肝功八项 应与 肝功能 同组");
+        assert_eq!(&map["肝功全套"], liver, "肝功全套 应与 肝功能 同组");
+        assert_eq!(&map["肝功能检测"], liver, "肝功能检测 应与 肝功能 同组");
+
+        let blood = &map["血常规"];
+        assert_eq!(&map["血常规五分类"], blood, "血常规五分类 应与 血常规 同组");
+        assert_eq!(&map["血细胞分析"], blood, "血细胞分析 应与 血常规 同组");
+        assert_eq!(&map["全血细胞计数"], blood, "全血细胞计数 应与 血常规 同组");
+        assert_eq!(&map["血液分析"], blood, "血液分析 应与 血常规 同组");
+
+        let thyroid = &map["甲功三项"];
+        assert_eq!(&map["甲功五项"], thyroid, "甲功五项 应与 甲功三项 同组");
+        assert_eq!(&map["甲状腺功能"], thyroid, "甲状腺功能 应与 甲功三项 同组");
+        assert_eq!(&map["甲状腺功能全套"], thyroid, "甲状腺功能全套 应与 甲功三项 同组");
+
+        let coag = &map["凝血四项"];
+        assert_eq!(&map["凝血功能"], coag, "凝血功能 应与 凝血四项 同组");
+        assert_eq!(&map["凝血全套"], coag, "凝血全套 应与 凝血四项 同组");
+        assert_eq!(&map["凝血七项"], coag, "凝血七项 应与 凝血四项 同组");
+
+        let hbv = &map["乙肝五项"];
+        assert_eq!(&map["乙肝两对半"], hbv, "乙肝两对半 应与 乙肝五项 同组");
+        assert_eq!(&map["乙肝病毒DNA"], hbv, "乙肝病毒DNA 应与 乙肝五项 同组");
+
+        // 验证：不同类别不应合并
+        assert_ne!(&map["肝功能"], &map["肾功能"], "肝功能 ≠ 肾功能");
+        assert_ne!(&map["血常规"], &map["血脂四项"], "血常规 ≠ 血脂四项");
+        assert_ne!(&map["血常规"], &map["生化全套"], "血常规 ≠ 生化全套");
+        assert_ne!(&map["尿常规"], &map["血常规"], "尿常规 ≠ 血常规");
+        assert_ne!(&map["肝功能"], &map["生化全套"], "肝功能 ≠ 生化全套");
+
+        // 统计：计算分类后的组数
+        let mut categories: Vec<&String> = map.values().collect();
+        categories.sort();
+        categories.dedup();
+        eprintln!("  共 {} 个报告类型 → {} 个分类组", types.len(), categories.len());
+        // 预期：肝功能(5) + 血常规(5) + 甲功(4) + 凝血(4) + 乙肝(3) + 肾功(1) + 血脂(1) + 尿常规(1) + 生化(1) = 9 组
+        assert_eq!(categories.len(), 9, "应分为 9 个不同的分类组");
+    }
+
+    /// 模拟真实场景：多家医院的混乱检验项目名称 → 趋势归一化能否正确统一
+    #[test]
+    fn chaos_item_name_normalization() {
+        // 每组内的名称应归一化为同一个标准名
+        let test_groups: Vec<(&str, Vec<&str>)> = vec![
+            (
+                "白细胞计数",
+                vec!["WBC", "白细胞", "白细胞数", "白细胞总数", "白细胞记数"],
+            ),
+            (
+                "丙氨酸氨基转移酶",
+                vec!["ALT", "谷丙转氨酶", "丙氨酸转氨酶"],
+            ),
+            (
+                "天门冬氨酸氨基转移酶",
+                vec!["AST", "谷草转氨酶", "天冬氨酸转氨酶"],
+            ),
+            (
+                "超敏C反应蛋白",
+                vec!["hs-CRP", "超敏C反应蛋白", "高敏C反应蛋白", "超高敏C反应蛋白", "hsCRP"],
+            ),
+            (
+                "C反应蛋白",
+                vec!["CRP", "C反应蛋白", "C-反应蛋白", "常规C反应蛋白"],
+            ),
+            (
+                "乙肝病毒DNA",  // trend_post_process 去掉 "定量"
+                vec!["HBV-DNA", "HBV_DNA", "乙型肝炎病毒DNA", "乙肝病毒DNA"],
+            ),
+            (
+                "乙肝表面抗原",
+                vec!["HBsAg", "乙肝表面抗原", "乙型肝炎表面抗原"],
+            ),
+            (
+                "甘油三酯",
+                vec!["TG", "甘油三脂", "三酰甘油", "甘油三酯", "三酰甘油酯"],
+            ),
+            (
+                "γ-谷氨酰转移酶",
+                vec!["GGT", "γ-谷氨酰转肽酶", "谷氨酰转肽酶", "谷氨酰转移酶", "r-谷氨酰转移酶"],
+            ),
+            (
+                "高敏心肌肌钙蛋白I",
+                vec!["hs-cTnI", "高敏心肌肌钙蛋白I", "超敏肌钙蛋白I", "高敏肌钙蛋白I", "超敏肌钙蛋白", "hs-TnI", "hsTnI"],
+            ),
+        ];
+
+        eprintln!("\n===== 项目名称归一化结果 =====");
+        let mut total = 0;
+        let mut correct = 0;
+
+        for (expected, variants) in &test_groups {
+            for variant in variants {
+                let result = normalize_trend_item_name(variant);
+                let ok = result == *expected;
+                total += 1;
+                if ok {
+                    correct += 1;
+                }
+                let msg = if ok {
+                    String::new()
+                } else {
+                    format!("(期望: {})", expected)
+                };
+                eprintln!(
+                    "  {} {:30} → {:30} {}",
+                    if ok { "✓" } else { "✗" },
+                    variant,
+                    result,
+                    msg
+                );
+            }
+        }
+
+        // 验证不应被合并的项目确实不同
+        let crp = normalize_trend_item_name("CRP");
+        let hscrp = normalize_trend_item_name("hs-CRP");
+        assert_ne!(crp, hscrp, "CRP ≠ hs-CRP");
+
+        let tni = normalize_trend_item_name("心肌肌钙蛋白I");
+        let hs_tni = normalize_trend_item_name("高敏心肌肌钙蛋白I");
+        assert_ne!(tni, hs_tni, "心肌肌钙蛋白I ≠ 高敏心肌肌钙蛋白I");
+
+        let accuracy = correct as f64 / total as f64 * 100.0;
+        eprintln!("\n  准确率: {}/{} = {:.1}%", correct, total, accuracy);
+        assert!(
+            accuracy >= 99.0,
+            "归一化准确率 {:.1}% 未达到 99% 目标",
+            accuracy
+        );
     }
 
     // --- search index blob matching ---

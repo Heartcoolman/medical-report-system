@@ -305,9 +305,11 @@ pub async fn suggest_groups(
                 let prompt = crate::algorithm_engine::llm_verify::build_merge_verify_prompt(
                     f.report_type,
                     f.report_date,
+                    f.sample_date,
                     f.item_names,
                     &existing_infos[ei].report_type,
                     &existing_infos[ei].report_date,
+                    &existing_infos[ei].sample_date,
                     &existing_infos[ei].item_names,
                 );
                 match llm_verify_merge(&client, &prompt).await {
@@ -343,9 +345,11 @@ pub async fn suggest_groups(
                 let prompt = crate::algorithm_engine::llm_verify::build_merge_verify_prompt(
                     f.report_type,
                     f.report_date,
+                    f.sample_date,
                     f.item_names,
                     other.report_type,
                     other.report_date,
+                    other.sample_date,
                     other.item_names,
                 );
                 if let Some(true) = llm_verify_merge(&client, &prompt).await {
@@ -798,9 +802,11 @@ pub async fn merge_check(
             let prompt = crate::algorithm_engine::llm_verify::build_merge_verify_prompt(
                 nr.report_type,
                 nr.report_date,
+                nr.sample_date,
                 nr.item_names,
                 &er.report_type,
                 &er.report_date,
+                &er.sample_date,
                 &er.item_names,
             );
 

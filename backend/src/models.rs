@@ -338,6 +338,100 @@ pub struct UpdateTestItemReq {
     pub status: Option<ItemStatus>,
 }
 
+// --- Daily Expense ---
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExpenseCategory {
+    Drug,
+    Test,
+    Treatment,
+    Material,
+    Nursing,
+    Other,
+}
+
+impl fmt::Display for ExpenseCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExpenseCategory::Drug => write!(f, "drug"),
+            ExpenseCategory::Test => write!(f, "test"),
+            ExpenseCategory::Treatment => write!(f, "treatment"),
+            ExpenseCategory::Material => write!(f, "material"),
+            ExpenseCategory::Nursing => write!(f, "nursing"),
+            ExpenseCategory::Other => write!(f, "other"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyExpense {
+    pub id: String,
+    pub patient_id: String,
+    pub expense_date: String,
+    pub total_amount: f64,
+    #[serde(default)]
+    pub drug_analysis: String,
+    #[serde(default)]
+    pub treatment_analysis: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpenseItem {
+    pub id: String,
+    pub expense_id: String,
+    pub name: String,
+    pub category: ExpenseCategory,
+    pub quantity: String,
+    pub amount: f64,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyExpenseDetail {
+    #[serde(flatten)]
+    pub expense: DailyExpense,
+    pub items: Vec<ExpenseItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyExpenseSummary {
+    #[serde(flatten)]
+    pub expense: DailyExpense,
+    pub item_count: usize,
+    pub drug_count: usize,
+    pub test_count: usize,
+    pub treatment_count: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmExpenseReq {
+    pub expense_date: String,
+    pub total_amount: f64,
+    #[serde(default)]
+    pub drug_analysis: String,
+    #[serde(default)]
+    pub treatment_analysis: String,
+    pub items: Vec<ConfirmExpenseItemReq>,
+}
+
+#[derive(Deserialize)]
+pub struct ConfirmExpenseItemReq {
+    pub name: String,
+    pub category: ExpenseCategory,
+    pub quantity: String,
+    pub amount: f64,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Deserialize)]
+pub struct BatchConfirmExpenseReq {
+    pub days: Vec<ConfirmExpenseReq>,
+}
+
 // --- Pagination ---
 
 #[derive(Debug, Clone, Serialize)]

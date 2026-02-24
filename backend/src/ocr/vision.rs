@@ -8,7 +8,7 @@ const VISION_MODEL: &str = "Qwen/Qwen3-VL-235B-A22B-Instruct";
 
 const SYSTEM_PROMPT: &str = r#"你是一个专业的医疗检验报告识别助手。请从报告中提取以下信息，以严格的 JSON 格式返回，不要包含任何其他文字：
 {
-  "report_type": "报告类型（优先使用报告文档上明确标注的标题/页眉/表头，如：血常规、肝功能、肾功能、血脂、血糖、尿常规、甲状腺功能、脑脊液常规、脑脊液生化等，不要自行推断或归纳）",
+  "report_type": "报告类型（优先使用报告文档上明确标注的标题/页眉/表头，如：血常规、肝功能、肾功能、血脂、血糖、尿常规、甲状腺功能、脑脊液常规、脑脊液生化等；如果图片缺少表头且无法直接读取标题，可以根据 items 保守推断一个最可能的类型；如果仍无法确定则填空字符串 \"\"）",
   "hospital": "医院名称",
   "sample_date": "检查/采样/送检日期，格式 YYYY-MM-DD",
   "report_date": "报告出具/审核/打印日期，格式 YYYY-MM-DD",
@@ -178,7 +178,7 @@ async fn call_api(
         .map(|c| c.message.content)
         .ok_or("API 返回为空")?;
 
-    let json_str = extract_json(&content)?;
+    let json_str = crate::handlers::extract_json_block(&content)?;
 
     let mut report: ParsedReport = serde_json::from_str(&json_str)
         .map_err(|e| format!("解析模型返回的 JSON 失败: {}，原始内容: {}", e, content))?;
@@ -193,25 +193,4 @@ async fn call_api(
     }
 
     Ok(report)
-}
-
-fn extract_json(text: &str) -> Result<String, String> {
-    if let Some(start) = text.find("```json") {
-        let after = &text[start + 7..];
-        if let Some(end) = after.find("```") {
-            return Ok(after[..end].trim().to_string());
-        }
-    }
-    if let Some(start) = text.find("```") {
-        let after = &text[start + 3..];
-        if let Some(end) = after.find("```") {
-            return Ok(after[..end].trim().to_string());
-        }
-    }
-    if let Some(start) = text.find('{') {
-        if let Some(end) = text.rfind('}') {
-            return Ok(text[start..=end].to_string());
-        }
-    }
-    Err(format!("无法从模型输出中提取 JSON: {}", text))
 }

@@ -4,6 +4,7 @@ import { Button, Card, CardBody, Badge, Modal, Skeleton, Empty, Input, useToast,
 import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
 import ReportUpload from './ReportUpload'
+import ExpenseUpload from './ExpenseUpload'
 import { LlmInterpret } from '@/components/LlmInterpret'
 
 export default function PatientDetail() {
@@ -19,7 +20,43 @@ export default function PatientDetail() {
   const [showDeleteModal, setShowDeleteModal] = createSignal(false)
   const [deleting, setDeleting] = createSignal(false)
   const [showUploadModal, setShowUploadModal] = createSignal(false)
+  const [showExpenseModal, setShowExpenseModal] = createSignal(false)
   const [showActionSheet, setShowActionSheet] = createSignal(false)
+
+  const [expenses, { refetch: refetchExpenses }] = createResource(() => params.id, (id) => api.expenses.list(id))
+
+  const [deleteExpenseId, setDeleteExpenseId] = createSignal<string | null>(null)
+  const [deletingExpense, setDeletingExpense] = createSignal(false)
+
+  // Detect duplicate expense dates
+  const duplicateExpenseDates = createMemo(() => {
+    const list = expenses() ?? []
+    const counts: Record<string, number> = {}
+    for (const e of list) {
+      counts[e.expense_date] = (counts[e.expense_date] || 0) + 1
+    }
+    const dups = new Set<string>()
+    for (const [date, count] of Object.entries(counts)) {
+      if (count > 1) dups.add(date)
+    }
+    return dups
+  })
+
+  async function handleDeleteExpense() {
+    const id = deleteExpenseId()
+    if (!id) return
+    setDeletingExpense(true)
+    try {
+      await api.expenses.delete(id)
+      toast('success', '消费记录已删除')
+      refetchExpenses()
+    } catch (err: any) {
+      toast('error', err.message || '删除失败')
+    } finally {
+      setDeletingExpense(false)
+      setDeleteExpenseId(null)
+    }
+  }
 
   // AI interpretation state
   const [showInterpretModal, setShowInterpretModal] = createSignal(false)
@@ -326,6 +363,14 @@ export default function PatientDetail() {
                           variant="secondary"
                           size="sm"
                           class="w-full"
+                          onClick={() => setShowExpenseModal(true)}
+                        >
+                          上传消费清单
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
                           onClick={() => navigate(`/patients/${params.id}/trends`)}
                         >
                           趋势分析
@@ -617,9 +662,114 @@ export default function PatientDetail() {
                   <Skeleton variant="rect" height={100} />
                 </div>
               </Show>
+
+              {/* Expense list section */}
+              <h2 class="section-title mb-3 mt-6">消费清单</h2>
+              <Show when={expenses.loading} fallback={
+                <Show when={expenses.error} fallback={
+                  <Show
+                    when={(expenses() ?? []).length > 0}
+                    fallback={
+                      <Empty
+                        title="暂无消费清单"
+                        description="还没有上传任何消费清单"
+                        action={
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => setShowExpenseModal(true)}
+                          >
+                            上传消费清单
+                          </Button>
+                        }
+                      />
+                    }
+                  >
+                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                      <For each={[...(expenses() ?? [])].sort((a, b) => b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at))}>
+                        {(expense) => (
+                          <A
+                            href={`/expenses/${expense.id}`}
+                            class="block no-underline group"
+                          >
+                            <Card variant="outlined" class="h-full hover:border-accent hover:-translate-y-0.5 hover:shadow-md transition-all cursor-pointer relative">
+                              <CardBody class="p-3 flex flex-col gap-1">
+                                <div class="flex items-start justify-between gap-2">
+                                  <div class="flex items-center gap-1.5 min-w-0">
+                                    <h3 class="text-sm font-semibold text-content">{expense.expense_date}</h3>
+                                    <Show when={duplicateExpenseDates().has(expense.expense_date)}>
+                                      <span class="text-[10px] px-1.5 py-0.5 rounded bg-warning-light text-warning font-medium">重复</span>
+                                    </Show>
+                                  </div>
+                                  <div class="flex items-center gap-1 shrink-0">
+                                    <span class="meta-text">¥{expense.total_amount.toFixed(2)}</span>
+                                    <button
+                                      class="w-6 h-6 flex items-center justify-center rounded text-content-tertiary hover:text-error hover:bg-error-light opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                                      title="删除"
+                                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDeleteExpenseId(expense.id) }}
+                                    >
+                                      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                                <div class="flex items-center gap-2 text-xs text-content-tertiary flex-wrap">
+                                  <span>{expense.item_count} 项</span>
+                                  <Show when={expense.drug_count > 0}>
+                                    <Badge variant="accent">{expense.drug_count} 药品</Badge>
+                                  </Show>
+                                  <Show when={expense.test_count > 0}>
+                                    <Badge variant="info">{expense.test_count} 检查</Badge>
+                                  </Show>
+                                  <Show when={expense.treatment_count > 0}>
+                                    <Badge variant="success">{expense.treatment_count} 治疗</Badge>
+                                  </Show>
+                                </div>
+                              </CardBody>
+                            </Card>
+                          </A>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                }>
+                  <Empty
+                    title="加载消费清单失败"
+                    description={String(expenses.error?.message || expenses.error)}
+                  />
+                </Show>
+              }>
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                  <Skeleton variant="rect" height={80} />
+                  <Skeleton variant="rect" height={80} />
+                  <Skeleton variant="rect" height={80} />
+                </div>
+              </Show>
             </div>
 
-            {/* Delete confirmation modal */}
+            {/* Delete expense confirmation modal */}
+            <Modal
+              open={!!deleteExpenseId()}
+              onClose={() => setDeleteExpenseId(null)}
+              title="确认删除消费记录"
+              size="sm"
+              footer={
+                <>
+                  <Button variant="outline" onClick={() => setDeleteExpenseId(null)}>
+                    取消
+                  </Button>
+                  <Button variant="danger" loading={deletingExpense()} onClick={handleDeleteExpense}>
+                    确认删除
+                  </Button>
+                </>
+              }
+            >
+              <p class="text-content">确定要删除该消费记录吗？</p>
+              <p class="text-sm text-content-secondary mt-2">此操作不可撤销。</p>
+            </Modal>
+
+            {/* Delete patient confirmation modal */}
             <Modal
               open={showDeleteModal()}
               onClose={() => setShowDeleteModal(false)}
@@ -799,6 +949,17 @@ export default function PatientDetail() {
               }}
             />
 
+            {/* Upload Expense Modal */}
+            <ExpenseUpload
+              patientId={params.id}
+              open={showExpenseModal()}
+              onClose={() => setShowExpenseModal(false)}
+              onComplete={() => {
+                setShowExpenseModal(false)
+                refetchExpenses()
+              }}
+            />
+
             {/* Mobile action FAB + BottomSheet */}
             <div class="lg:hidden">
               <FloatingActionButton
@@ -830,6 +991,20 @@ export default function PatientDetail() {
                   <div>
                     <div class="font-medium text-content">上传报告</div>
                     <div class="text-xs text-content-secondary">上传新的检查报告</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); setShowExpenseModal(true) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-accent-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">上传消费清单</div>
+                    <div class="text-xs text-content-secondary">识别用药和治疗方案</div>
                   </div>
                 </button>
                 <button

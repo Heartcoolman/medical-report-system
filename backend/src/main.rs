@@ -31,6 +31,9 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Load .env file
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
@@ -43,7 +46,7 @@ async fn main() {
     });
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(std::time::Duration::from_secs(300))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .build()
         .unwrap_or_else(|e| {

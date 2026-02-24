@@ -1,3 +1,4 @@
+pub mod expense;
 pub mod interpret;
 pub mod normalize;
 pub mod ocr;
@@ -55,21 +56,88 @@ pub fn extract_llm_content(resp_json: &serde_json::Value) -> Result<String, Stri
         .ok_or_else(|| format!("LLM API 返回格式异常: {}", resp_json))
 }
 
+pub fn extract_json_block(content: &str) -> Result<String, String> {
+    let trimmed = content.trim();
+
+    if let Some(start) = trimmed.find("```json") {
+        let after = &trimmed[start + 7..];
+        if let Some(end) = after.find("```") {
+            return Ok(after[..end].trim().to_string());
+        }
+    }
+    if let Some(start) = trimmed.find("```") {
+        let after = &trimmed[start + 3..];
+        if let Some(end) = after.find("```") {
+            return Ok(after[..end].trim().to_string());
+        }
+    }
+
+    // Use bracket-depth matching to find the correct end of JSON
+    // Try whichever bracket appears first in the text
+    let brace_pos = trimmed.find('{');
+    let bracket_pos = trimmed.find('[');
+    match (brace_pos, bracket_pos) {
+        (Some(b), Some(a)) if a < b => {
+            // '[' comes first — likely an array like [{...}]
+            if let Some(result) = find_balanced_json(trimmed, '[', ']') {
+                return Ok(result);
+            }
+            if let Some(result) = find_balanced_json(trimmed, '{', '}') {
+                return Ok(result);
+            }
+        }
+        _ => {
+            if let Some(result) = find_balanced_json(trimmed, '{', '}') {
+                return Ok(result);
+            }
+            if let Some(result) = find_balanced_json(trimmed, '[', ']') {
+                return Ok(result);
+            }
+        }
+    }
+
+    Err(format!("无法从模型输出中提取 JSON: {}", content))
+}
+
+pub fn find_balanced_json(s: &str, open: char, close: char) -> Option<String> {
+    let start = s.find(open)?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    for (i, ch) in s[start..].char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(s[start..start + i + ch.len_utf8()].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Extract a JSON object `{...}` from LLM text output and deserialize it.
 pub fn parse_llm_json_object(
     content: &str,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let trimmed = content.trim();
-    let json_str = if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            &trimmed[start..=end]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-    serde_json::from_str(json_str)
+    let json_str = extract_json_block(content)?;
+    serde_json::from_str(&json_str)
         .map_err(|e| format!("解析 LLM JSON 结果失败: {}, 原始: {}", e, content))
 }
 

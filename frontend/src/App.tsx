@@ -10,6 +10,7 @@ const PatientEdit = lazy(() => import('./pages/PatientEdit'))
 const ReportDetail = lazy(() => import('./pages/ReportDetail'))
 const TrendAnalysis = lazy(() => import('./pages/TrendAnalysis'))
 const EditLogs = lazy(() => import('./pages/EditLogs'))
+const ExpenseDetail = lazy(() => import('./pages/ExpenseDetail'))
 
 function NotFound() {
   return (
@@ -32,6 +33,7 @@ function App() {
           <Route path="/patients/:id/edit" component={PatientEdit} />
           <Route path="/patients/:id/trends" component={TrendAnalysis} />
           <Route path="/reports/:id" component={ReportDetail} />
+          <Route path="/expenses/:id" component={ExpenseDetail} />
           <Route path="/edit-logs" component={EditLogs} />
           <Route path="*" component={NotFound} />
         </Suspense>

@@ -106,17 +106,46 @@ pub fn normalize_for_scoring(name: &str, report_type: &str) -> String {
 
 /// Normalize an item name for trend aggregation.
 ///
-/// This keeps trend-specific compatibility behavior while reusing the same
-/// algorithm engine normalization rules.
+/// Uses a dictionary-first strategy (same as `rule_dict_normalize`) to preserve
+/// clinically meaningful prefixes (e.g. "超敏C反应蛋白" stays distinct from
+/// "C反应蛋白"), then applies trend-specific post-processing.
 pub fn normalize_for_trend(name: &str) -> String {
-    // Trends compare items inside a report-type category, so fluid prefixes can
-    // be safely stripped without relying on a specific report_type input.
-    let mut canonical = rule_normalize(name, "脑脊液尿液粪便");
-    // Keep historical trend key compatibility for HBV DNA.
-    if canonical == "乙肝病毒DNA定量" {
-        canonical = "乙肝病毒DNA".to_string();
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return String::new();
     }
-    canonical
+
+    // Dictionary lookup on ORIGINAL name first — protects clinical prefixes
+    if let Some(canonical) = SYNONYMS.get(trimmed) {
+        return trend_post_process(canonical);
+    }
+    if is_canonical_value(trimmed) {
+        return trend_post_process(trimmed);
+    }
+
+    // Rule-based normalization (trends: strip ALL fluid prefixes unconditionally)
+    let rule_normalized = rule_normalize(trimmed, "脑脊液尿液粪便");
+
+    // Dictionary lookup on rule-normalized form
+    if rule_normalized != trimmed {
+        if let Some(canonical) = SYNONYMS.get(&rule_normalized) {
+            return trend_post_process(canonical);
+        }
+        if is_canonical_value(&rule_normalized) {
+            return trend_post_process(&rule_normalized);
+        }
+    }
+
+    trend_post_process(&rule_normalized)
+}
+
+/// Trend-specific post-processing: maintain historical key compatibility.
+fn trend_post_process(canonical: &str) -> String {
+    // HBV DNA: keep "乙肝病毒DNA" for backward-compatible trend keys
+    if canonical == "乙肝病毒DNA定量" {
+        return "乙肝病毒DNA".to_string();
+    }
+    canonical.to_string()
 }
 
 /// Check if a string is already a canonical value in the synonym dictionary.
@@ -582,5 +611,74 @@ mod tests {
     fn normalize_for_trend_strips_fluid_prefix() {
         let r = normalize_for_trend("脑脊液氯");
         assert_eq!(r, "氯");
+    }
+
+    #[test]
+    fn normalize_for_trend_uses_dictionary() {
+        // Previously normalize_for_trend only used rule_normalize, missing
+        // dictionary mappings. Now it should resolve abbreviations.
+        assert_eq!(normalize_for_trend("WBC"), "白细胞计数");
+        assert_eq!(normalize_for_trend("RBC"), "红细胞计数");
+        assert_eq!(normalize_for_trend("谷丙转氨酶"), "丙氨酸氨基转移酶");
+        assert_eq!(normalize_for_trend("谷草转氨酶"), "天门冬氨酸氨基转移酶");
+        assert_eq!(normalize_for_trend("hs-CRP"), "超敏C反应蛋白");
+        assert_eq!(normalize_for_trend("CRP"), "C反应蛋白");
+    }
+
+    #[test]
+    fn normalize_for_trend_preserves_sensitivity_prefix() {
+        // "超敏C反应蛋白" and "C反应蛋白" are clinically distinct — must NOT merge
+        assert_eq!(normalize_for_trend("超敏C反应蛋白"), "超敏C反应蛋白");
+        assert_eq!(normalize_for_trend("C反应蛋白"), "C反应蛋白");
+        assert_ne!(
+            normalize_for_trend("超敏C反应蛋白"),
+            normalize_for_trend("C反应蛋白")
+        );
+        // Same for troponin
+        assert_eq!(normalize_for_trend("高敏心肌肌钙蛋白I"), "高敏心肌肌钙蛋白I");
+        assert_eq!(normalize_for_trend("心肌肌钙蛋白I"), "心肌肌钙蛋白I");
+        assert_ne!(
+            normalize_for_trend("高敏心肌肌钙蛋白I"),
+            normalize_for_trend("心肌肌钙蛋白I")
+        );
+    }
+
+    #[test]
+    fn normalize_for_trend_empty_and_whitespace() {
+        assert_eq!(normalize_for_trend(""), "");
+        assert_eq!(normalize_for_trend("  "), "");
+    }
+
+    #[test]
+    fn normalize_for_trend_canonical_passthrough() {
+        // Already-canonical names should pass through unchanged
+        assert_eq!(normalize_for_trend("白细胞计数"), "白细胞计数");
+        assert_eq!(normalize_for_trend("丙氨酸氨基转移酶"), "丙氨酸氨基转移酶");
+        assert_eq!(normalize_for_trend("甘油三酯"), "甘油三酯");
+    }
+
+    #[test]
+    fn normalize_for_trend_sensitivity_unification() {
+        // All hs-CRP variants should unify to "超敏C反应蛋白"
+        assert_eq!(normalize_for_trend("高敏C反应蛋白"), "超敏C反应蛋白");
+        assert_eq!(normalize_for_trend("超高敏C反应蛋白"), "超敏C反应蛋白");
+        assert_eq!(normalize_for_trend("hsCRP"), "超敏C反应蛋白");
+        assert_eq!(normalize_for_trend("常规C反应蛋白"), "C反应蛋白");
+    }
+
+    #[test]
+    fn normalize_for_trend_ocr_typo_jishu() {
+        // "记数" is a common OCR misread of "计数"
+        assert_eq!(normalize_for_trend("白细胞记数"), "白细胞计数");
+        assert_eq!(normalize_for_trend("淋巴细胞记数"), "淋巴细胞计数");
+        assert_eq!(normalize_for_trend("血小板记数"), "血小板计数");
+    }
+
+    #[test]
+    fn normalize_for_trend_new_aliases() {
+        assert_eq!(normalize_for_trend("GLOB"), "球蛋白");
+        assert_eq!(normalize_for_trend("AKP"), "碱性磷酸酶");
+        assert_eq!(normalize_for_trend("谷氨酰转移酶"), "γ-谷氨酰转移酶");
+        assert_eq!(normalize_for_trend("三酰甘油酯"), "甘油三酯");
     }
 }

@@ -438,8 +438,10 @@ pub async fn get_cached_interpretation(
     let cached = run_blocking(move || db.get_interpretation(&rid)).await?;
     match cached {
         Some((content, created_at)) => {
+            let parsed_content: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::Value::String(content.clone()));
             let data = serde_json::json!({
-                "content": content,
+                "content": parsed_content,
                 "created_at": created_at,
             });
             Ok(Json(ApiResponse::ok(data, "查询成功")))

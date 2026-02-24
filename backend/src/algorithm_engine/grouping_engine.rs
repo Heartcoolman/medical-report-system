@@ -826,6 +826,208 @@ mod tests {
         assert!(!best.is_empty());
     }
 
+    // --- 跨医院、跨批次实战测试 ---
+
+    /// 场景：同一次住院的报告，因为医院出报告时间不同，隔了几天才上传
+    /// 验证：引擎是否能根据 sample_date 正确判断合并
+    #[test]
+    fn chaos_cross_batch_delayed_upload() {
+        // 脑脊液常规：采样 3-15，报告 3-15（当天出结果）
+        let items_csf1: Vec<String> = vec!["潘氏试验".into(), "白细胞计数".into(), "红细胞计数".into()];
+        // 脑脊液生化：采样 3-15，但报告 3-17（隔了两天才出结果）
+        let items_csf2: Vec<String> = vec!["葡萄糖".into(), "氯".into(), "蛋白质".into()];
+        // 脑脊液免疫：采样 3-15，报告 3-18（隔了三天才出结果）
+        let items_csf3: Vec<String> = vec!["免疫球蛋白G".into(), "免疫球蛋白A".into()];
+
+        eprintln!("\n===== 跨批次延迟上传场景 =====");
+
+        // Case 1: 同 sample_date，不同 report_date → 应该用 sample_date 判断 → SameDay → Merge
+        let a = mk_info("脑脊液常规", "2024-03-15", "2024-03-15", &items_csf1);
+        let b = mk_info("脑脊液生化", "2024-03-17", "2024-03-15", &items_csf2);
+        let score = compute_merge_score(&a, &b);
+        eprintln!(
+            "  脑脊液常规(报告3-15,采样3-15) vs 脑脊液生化(报告3-17,采样3-15) → {:?} (date={:.1}, type={:.1})",
+            score.decision, score.date_score, score.type_score
+        );
+        assert_eq!(
+            score.decision,
+            MergeDecision::Merge,
+            "同采样日不同报告日应合并"
+        );
+
+        // Case 2: 同 sample_date，报告隔了3天 → 仍然用 sample_date → SameDay → Merge
+        let c = mk_info("脑脊液免疫球蛋白", "2024-03-18", "2024-03-15", &items_csf3);
+        let score2 = compute_merge_score(&a, &c);
+        eprintln!(
+            "  脑脊液常规(报告3-15,采样3-15) vs 脑脊液免疫(报告3-18,采样3-15) → {:?} (date={:.1}, type={:.1})",
+            score2.decision, score2.date_score, score2.type_score
+        );
+        assert_eq!(
+            score2.decision,
+            MergeDecision::Merge,
+            "采样日相同，即使报告日差3天也应合并"
+        );
+
+        // Case 3: 没有 sample_date，只有 report_date 隔了2天 → Close → NoMerge
+        let d = mk_info("脑脊液常规", "2024-03-15", "", &items_csf1);
+        let e = mk_info("脑脊液生化", "2024-03-17", "", &items_csf2);
+        let score3 = compute_merge_score(&d, &e);
+        eprintln!(
+            "  脑脊液常规(仅报告日3-15) vs 脑脊液生化(仅报告日3-17) → {:?} (date={:.1})",
+            score3.decision, score3.date_score
+        );
+        assert_eq!(
+            score3.decision,
+            MergeDecision::NoMerge,
+            "无采样日且报告日差2天应拒绝合并"
+        );
+
+        // Case 4: 没有 sample_date，report_date 相邻（±1天）→ Adjacent → 可合并
+        let f = mk_info("脑脊液生化", "2024-03-16", "", &items_csf2);
+        let score4 = compute_merge_score(&d, &f);
+        eprintln!(
+            "  脑脊液常规(仅报告日3-15) vs 脑脊液生化(仅报告日3-16) → {:?} (date={:.1})",
+            score4.decision, score4.date_score
+        );
+        assert_eq!(
+            score4.decision,
+            MergeDecision::Merge,
+            "报告日相邻且同类别应合并"
+        );
+    }
+
+    /// 场景：不同医院的报告类型名称不同，但属于同一类别
+    /// 验证：跨医院的报告能否正确判断类型关系
+    #[test]
+    fn chaos_cross_hospital_naming() {
+        eprintln!("\n===== 跨医院命名差异场景 =====");
+
+        // 医院A叫"血常规"，医院B叫"血细胞分析" — 名字不同但同类别
+        // 注意：recheck 检测要求 report_type 完全相同，跨医院名称不同时不触发
+        // 引擎将此视为"多页扫描"场景 → Merge，这对跨医院场景是合理的
+        let items_blood: Vec<String> = vec!["白细胞计数".into(), "红细胞计数".into(), "血红蛋白".into()];
+        let a = mk_info("血常规", "2024-03-15", "", &items_blood);
+        let b = mk_info("血细胞分析", "2024-03-15", "", &items_blood);
+        let score = compute_merge_score(&a, &b);
+        eprintln!(
+            "  血常规 vs 血细胞分析 (同日同项,不同名) → {:?}",
+            score.decision
+        );
+        assert_eq!(score.decision, MergeDecision::Merge, "跨医院同类别+同日+同项 → 合并");
+
+        // 对比：完全相同的 report_type + 高重叠 → recheck 检测 → NoMerge
+        let c_dup = mk_info("血常规", "2024-03-15", "", &items_blood);
+        let d_dup = mk_info("血常规", "2024-03-15", "", &items_blood);
+        let score_dup = compute_merge_score(&c_dup, &d_dup);
+        eprintln!(
+            "  血常规 vs 血常规 (同日同项,同名) → {:?}",
+            score_dup.decision
+        );
+        assert_eq!(score_dup.decision, MergeDecision::NoMerge, "同名同日高重叠 → 复查/重复");
+
+        // 医院A叫"肝功能"，医院B叫"肝功十一项"，互补项目
+        let items_liver_a: Vec<String> = vec!["丙氨酸氨基转移酶".into(), "总胆红素".into()];
+        let items_liver_b: Vec<String> = vec!["白蛋白".into(), "球蛋白".into()];
+        let c = mk_info("肝功能", "2024-03-15", "", &items_liver_a);
+        let d = mk_info("肝功十一项", "2024-03-15", "", &items_liver_b);
+        let score2 = compute_merge_score(&c, &d);
+        eprintln!(
+            "  肝功能 vs 肝功十一项 (同日互补项) → {:?}",
+            score2.decision
+        );
+        assert_eq!(score2.decision, MergeDecision::Merge, "同类别+同日+互补项目应合并");
+
+        // 不同类别不应合并，即使同天
+        let items_kidney: Vec<String> = vec!["肌酐".into(), "尿素氮".into()];
+        let e = mk_info("肝功能", "2024-03-15", "", &items_liver_a);
+        let f = mk_info("肾功能", "2024-03-15", "", &items_kidney);
+        let score3 = compute_merge_score(&e, &f);
+        eprintln!(
+            "  肝功能 vs 肾功能 (同日不同类) → {:?}",
+            score3.decision
+        );
+        assert_eq!(score3.decision, MergeDecision::NoMerge, "不同类别不应合并");
+
+        // 甲功三项 vs 甲状腺功能全套 — 同类别同日互补
+        let items_thyroid_a: Vec<String> = vec!["促甲状腺激素".into(), "游离T3".into()];
+        let items_thyroid_b: Vec<String> = vec!["游离T4".into(), "甲状腺球蛋白抗体".into()];
+        let g = mk_info("甲功三项", "2024-01-10", "", &items_thyroid_a);
+        let h = mk_info("甲状腺功能全套", "2024-01-10", "", &items_thyroid_b);
+        let score4 = compute_merge_score(&g, &h);
+        eprintln!(
+            "  甲功三项 vs 甲状腺功能全套 (同日互补) → {:?}",
+            score4.decision
+        );
+        assert_eq!(score4.decision, MergeDecision::Merge, "甲功变体+同日+互补应合并");
+    }
+
+    /// 场景：一次住院产生多份报告，分批上传到系统
+    /// 第一批：脑脊液常规 + 乙肝五项（3月15日上传）
+    /// 第二批：脑脊液生化 + 脑脊液免疫（3月16日上传，但采样日都是3月15日）
+    /// 第三批：血常规（3月15日的，独立报告）
+    /// 验证：batch_group 能否正确处理跨批次 + 已有报告的合并
+    #[test]
+    fn chaos_batch_group_multi_batch() {
+        eprintln!("\n===== 多批次上传场景 =====");
+
+        // 已有报告（第一批上传）
+        let existing = vec![
+            ExistingReportInfo {
+                report_type: "脑脊液常规".into(),
+                report_date: "2024-03-15".into(),
+                sample_date: "2024-03-15".into(),
+                item_names: vec!["潘氏试验".into(), "白细胞计数".into()],
+            },
+            ExistingReportInfo {
+                report_type: "乙肝五项".into(),
+                report_date: "2024-03-15".into(),
+                sample_date: "2024-03-15".into(),
+                item_names: vec!["乙肝表面抗原".into(), "乙肝表面抗体".into()],
+            },
+        ];
+
+        // 第二批上传的新报告
+        let items_csf_bio: Vec<String> = vec!["葡萄糖".into(), "氯".into(), "蛋白质".into()];
+        let items_csf_imm: Vec<String> = vec!["免疫球蛋白G".into(), "免疫球蛋白A".into()];
+        let items_blood: Vec<String> = vec!["白细胞计数".into(), "红细胞计数".into(), "血红蛋白".into()];
+
+        let new_files = vec![
+            // 脑脊液生化：采样3-15但报告3-16 → 应与已有脑脊液常规合并
+            mk_info("脑脊液生化", "2024-03-16", "2024-03-15", &items_csf_bio),
+            // 脑脊液免疫：采样3-15但报告3-17 → 应与已有脑脊液常规合并
+            mk_info("脑脊液免疫球蛋白", "2024-03-17", "2024-03-15", &items_csf_imm),
+            // 血常规：3-15的独立报告 → 不应与任何已有报告合并
+            mk_info("血常规", "2024-03-15", "2024-03-15", &items_blood),
+        ];
+
+        let result = batch_group(&new_files, &existing);
+
+        eprintln!("  分组结果: {:?}", result.groups);
+        eprintln!("  已有合并: {:?}", result.existing_merges);
+        eprintln!("  不确定项: {:?}", result.uncertain_indices);
+
+        // 脑脊液生化(0) 和 脑脊液免疫(1) 应该合并到已有报告 0（脑脊液常规）
+        let csf_merges: Vec<_> = result.existing_merges.iter()
+            .filter(|(_, ei)| *ei == 0)
+            .map(|(ni, _)| *ni)
+            .collect();
+        assert!(
+            csf_merges.contains(&0),
+            "脑脊液生化应合并到已有脑脊液常规"
+        );
+        assert!(
+            csf_merges.contains(&1),
+            "脑脊液免疫应合并到已有脑脊液常规"
+        );
+
+        // 血常规(2) 不应合并到任何已有报告
+        let blood_merged = result.existing_merges.iter().any(|(ni, _)| *ni == 2);
+        assert!(
+            !blood_merged,
+            "血常规不应合并到脑脊液或乙肝报告"
+        );
+    }
+
     // --- Config tests ---
 
     #[test]
