@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn sensitivity_prefix_preserved_for_hsCRP() {
+    fn sensitivity_prefix_preserved_for_hs_crp() {
         let mut by_type = HashMap::new();
         by_type.insert("感染".to_string(), vec!["超敏C反应蛋白".to_string()]);
         let results = normalize_batch(&by_type, &[]);

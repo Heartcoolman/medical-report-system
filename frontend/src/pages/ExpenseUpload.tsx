@@ -6,7 +6,6 @@ import {
 import { api } from '@/api/client'
 import type {
   ParsedExpenseItem, ExpenseCategory, DayParseResult,
-  ExpenseChunkResult,
 } from '@/api/types'
 
 const ACCEPT = '.png,.jpg,.jpeg,.webp,.pdf'
@@ -64,9 +63,6 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
   const [dragOver, setDragOver] = createSignal(false)
   const [parsing, setParsing] = createSignal(false)
   const [saving, setSaving] = createSignal(false)
-  const [chunkTotal, setChunkTotal] = createSignal(0)
-  const [chunkDone, setChunkDone] = createSignal(0)
-  const [merging, setMerging] = createSignal(false)
 
   // Multi-day edit state
   const [editDays, setEditDays] = createSignal<DayEditState[]>([])
@@ -81,9 +77,6 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
     setDragOver(false)
     setParsing(false)
     setSaving(false)
-    setChunkTotal(0)
-    setChunkDone(0)
-    setMerging(false)
     setEditDays([])
     setHasDuplicates(false)
     setConfirmOverwrite(false)
@@ -119,46 +112,8 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
     setFile(f)
   }
 
-  /** Split a large image into horizontal strips with overlap for parallel OCR */
-  async function splitImageIntoStrips(f: File, stripHeight = 800, overlap = 100): Promise<File[]> {
-    return new Promise<File[]>((resolve) => {
-      const img = new Image()
-      img.onload = () => {
-        const { width: w, height: h } = img
-        // Don't split small images
-        if (h <= 1000) {
-          resolve([f])
-          return
-        }
-        const strips: File[] = []
-        const step = stripHeight - overlap
-        const count = Math.ceil((h - overlap) / step)
-        for (let i = 0; i < count; i++) {
-          const y = Math.min(i * step, h - stripHeight)
-          const sh = Math.min(stripHeight, h - y)
-          const canvas = document.createElement('canvas')
-          canvas.width = w
-          canvas.height = sh
-          const ctx = canvas.getContext('2d')!
-          ctx.drawImage(img, 0, y, w, sh, 0, 0, w, sh)
-          // Convert synchronously to data URL, then to blob
-          const dataUrl = canvas.toDataURL('image/webp', 0.85)
-          const binary = atob(dataUrl.split(',')[1])
-          const arr = new Uint8Array(binary.length)
-          for (let j = 0; j < binary.length; j++) arr[j] = binary.charCodeAt(j)
-          const blob = new Blob([arr], { type: 'image/webp' })
-          strips.push(new File([blob], `chunk_${i}.webp`, { type: 'image/webp' }))
-        }
-        URL.revokeObjectURL(img.src)
-        resolve(strips)
-      }
-      img.onerror = () => resolve([f])
-      img.src = URL.createObjectURL(f)
-    })
-  }
-
-  /** Compress image client-side using Canvas (resize + WebP/JPEG). PDF passes through. */
-  async function compressImage(f: File, maxDim = 1500): Promise<File> {
+  /** Compress image client-side using Canvas (resize width only + WebP/JPEG). PDF passes through. */
+  async function compressImage(f: File, maxWidth = 1500): Promise<File> {
     if (f.type === 'application/pdf' || f.type.startsWith('application/')) return f
     if (f.size < 200 * 1024) return f // skip if already small
 
@@ -166,9 +121,9 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       const img = new Image()
       img.onload = () => {
         let { width: w, height: h } = img
-        if (w > maxDim || h > maxDim) {
-          const ratio = maxDim / Math.max(w, h)
-          w = Math.round(w * ratio)
+        if (w > maxWidth) {
+          const ratio = maxWidth / w
+          w = maxWidth
           h = Math.round(h * ratio)
         }
         const canvas = document.createElement('canvas')
@@ -202,71 +157,14 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
     if (!f) return
 
     setParsing(true)
-    setChunkTotal(0)
-    setChunkDone(0)
-    setMerging(false)
     try {
-      const isPdf = f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-
-      let result: { days: DayParseResult[] }
-
-      if (isPdf) {
-        // PDF: use original single-file flow
-        const compressed = await compressImage(f)
-        const [parseResult, existingList] = await Promise.all([
-          api.expenses.parse(props.patientId, compressed),
-          api.expenses.list(props.patientId).catch(() => [] as { expense_date: string }[]),
-        ])
-        result = parseResult
-        const existingDates = new Set(existingList.map(e => e.expense_date))
-        finishParse(result.days, existingDates)
-        return
-      }
-
-      // Image: try splitting into strips for parallel recognition
-      const strips = await splitImageIntoStrips(f)
-
-      if (strips.length <= 1) {
-        // Small image, use original single-file flow
-        const compressed = await compressImage(f)
-        const [parseResult, existingList] = await Promise.all([
-          api.expenses.parse(props.patientId, compressed),
-          api.expenses.list(props.patientId).catch(() => [] as { expense_date: string }[]),
-        ])
-        result = parseResult
-        const existingDates = new Set(existingList.map(e => e.expense_date))
-        finishParse(result.days, existingDates)
-        return
-      }
-
-      // Parallel chunk recognition
-      setChunkTotal(strips.length)
-      const existingListPromise = api.expenses.list(props.patientId).catch(() => [] as { expense_date: string }[])
-
-      const chunkResults: ExpenseChunkResult[] = []
-      const chunkPromises = strips.map(async (strip, idx) => {
-        try {
-          const days = await api.expenses.parseChunk(strip)
-          chunkResults.push({ chunk_index: idx, days })
-        } catch (err: any) {
-          toast('error', `条带 ${idx + 1} 识别失败: ${err.message}`)
-          chunkResults.push({ chunk_index: idx, days: [] })
-        } finally {
-          setChunkDone(prev => prev + 1)
-        }
-      })
-
-      await Promise.all(chunkPromises)
-
-      // Merge chunks via LLM
-      setMerging(true)
-      const [mergeResult, existingList] = await Promise.all([
-        api.expenses.mergeChunks({ chunks: chunkResults }),
-        existingListPromise,
+      const compressed = await compressImage(f)
+      const [parseResult, existingList] = await Promise.all([
+        api.expenses.parse(props.patientId, compressed),
+        api.expenses.list(props.patientId).catch(() => [] as { expense_date: string }[]),
       ])
-      result = mergeResult
       const existingDates = new Set(existingList.map(e => e.expense_date))
-      finishParse(result.days, existingDates)
+      finishParse(parseResult.days, existingDates)
     } catch (err: any) {
       toast('error', err.message || '解析失败')
     } finally {
@@ -447,13 +345,7 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
               <Button onClick={handleParse} disabled={parsing()}>
                 <Show when={parsing()} fallback="开始识别">
                   <Spinner size="sm" />
-                  <span class="ml-2">
-                    {merging()
-                      ? '合并整理中...'
-                      : chunkTotal() > 0
-                        ? `识别中 (${chunkDone()}/${chunkTotal()})`
-                        : '识别中...'}
-                  </span>
+                  <span class="ml-2">识别中...</span>
                 </Show>
               </Button>
             </div>

@@ -11,7 +11,7 @@ use axum::http::Method;
 use db::Database;
 use tower_http::cors::{Any, CorsLayer};
 
-const DB_PATH: &str = "data/sled_db";
+const DB_PATH: &str = "data/yiliao.db";
 const UPLOADS_DIR: &str = "uploads";
 const LISTEN_ADDR: &str = "0.0.0.0:3001";
 
@@ -36,6 +36,9 @@ async fn main() {
 
     // Initialize tracing
     tracing_subscriber::fmt::init();
+
+    // Ensure storage directories exist
+    std::fs::create_dir_all("data").ok();
 
     // Create uploads directory
     std::fs::create_dir_all(UPLOADS_DIR).ok();
@@ -76,7 +79,7 @@ async fn main() {
 
     let app = routes::build_router()
         .layer(cors)
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(LISTEN_ADDR)

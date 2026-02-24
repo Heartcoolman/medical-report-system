@@ -20,6 +20,7 @@ pub struct CategoryMatch {
     /// Whether the two types are in the same category.
     pub same_category: bool,
     /// Confidence score: 1.0 = exact dict match, 0.7 = prefix heuristic, 0.0 = unrelated.
+    #[allow(dead_code)]
     pub confidence: f32,
     /// The category name (if matched).
     #[allow(dead_code)]

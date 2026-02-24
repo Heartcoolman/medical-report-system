@@ -45,8 +45,8 @@ impl IntoResponse for AppError {
     }
 }
 
-impl From<sled::Error> for AppError {
-    fn from(e: sled::Error) -> Self {
+impl From<rusqlite::Error> for AppError {
+    fn from(e: rusqlite::Error) -> Self {
         AppError::Internal(format!("数据库错误: {}", e))
     }
 }

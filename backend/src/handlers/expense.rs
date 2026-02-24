@@ -166,46 +166,48 @@ pub struct ParsedExpenseItem {
 
 fn classify_category(name: &str) -> &'static str {
     let n = name.to_lowercase();
-    // Nursing
+    // Nursing (hospital service fees)
     if n.contains("护理") || n.contains("床位") || n.contains("陪护") || n.contains("诊查费") {
         return "nursing";
     }
     // Test / examination
     if n.contains("检验") || n.contains("检查") || n.contains("化验") || n.contains("血常规")
         || n.contains("尿常规") || n.contains("生化") || n.contains("培养") || n.contains("涂片")
-        || n.contains("CT") || n.contains("X线") || n.contains("超声") || n.contains("心电")
-        || n.contains("磁共振") || n.contains("MRI") || n.contains("病理") || n.contains("免疫")
+        || n.contains("ct") || n.contains("x线") || n.contains("超声") || n.contains("心电")
+        || n.contains("磁共振") || n.contains("mri") || n.contains("病理") || n.contains("免疫")
         || n.contains("抗体") || n.contains("测定") || n.contains("分析")
     {
         return "test";
     }
-    // Material
-    if n.contains("一次性") || n.contains("导管") || n.contains("留置针") || n.contains("注射器")
+    // Material (disposable supplies — check before drug/treatment)
+    if n.contains("一次性") || n.contains("导管") || n.contains("注射器")
         || n.contains("输液器") || n.contains("敷料") || n.contains("接头") || n.contains("冲管")
         || n.contains("采血管") || n.contains("针头") || n.contains("引流") || n.contains("纱布")
         || n.contains("棉签") || n.contains("手套")
     {
         return "material";
     }
-    // Treatment
-    if n.contains("注射") || n.contains("输液") || n.contains("穿刺") || n.contains("封堵")
-        || n.contains("调配") || n.contains("换药") || n.contains("治疗") || n.contains("手术")
-        || n.contains("麻醉") || n.contains("抢救") || n.contains("加收") || n.contains("冲洗")
-        || n.contains("灌肠") || n.contains("吸氧") || n.contains("雾化")
-    {
-        return "treatment";
-    }
-    // Drug (broad match last)
-    if n.contains("片") || n.contains("胶囊") || n.contains("注射液") || n.contains("口服液")
-        || n.contains("颗粒") || n.contains("滴眼") || n.contains("软膏") || n.contains("溶液")
+    // Drug (check dosage forms BEFORE treatment to avoid "注射" false positives)
+    if n.contains("注射液") || n.contains("注射用") || n.contains("片")
+        || n.contains("胶囊") || n.contains("口服液") || n.contains("颗粒")
+        || n.contains("滴眼") || n.contains("软膏") || n.contains("溶液")
         || n.contains("氯化钠") || n.contains("葡萄糖") || n.contains("灭菌注射用水")
         || n.contains("冻干粉") || n.contains("混悬") || n.contains("乳剂")
+        || n.contains("合剂") || n.contains("丸") || n.contains("散剂") || n.contains("酊")
         || n.contains("药") || n.contains("素") || n.contains("霉") || n.contains("唑")
         || n.contains("他汀") || n.contains("普利") || n.contains("沙坦") || n.contains("洛尔")
         || n.contains("西泮") || n.contains("曲辛") || n.contains("噻吨") || n.contains("肝素")
         || n.contains("甘草") || n.contains("集）") || n.contains("（集")
     {
         return "drug";
+    }
+    // Treatment (procedures — now safe because drug dosage forms already matched above)
+    if n.contains("注射") || n.contains("输液") || n.contains("穿刺") || n.contains("封堵")
+        || n.contains("调配") || n.contains("换药") || n.contains("治疗") || n.contains("手术")
+        || n.contains("麻醉") || n.contains("抢救") || n.contains("加收") || n.contains("冲洗")
+        || n.contains("灌肠") || n.contains("吸氧") || n.contains("雾化")
+    {
+        return "treatment";
     }
     "other"
 }
@@ -225,183 +227,90 @@ fn strip_think_blocks(s: &str) -> String {
     result.trim().to_string()
 }
 
+/// Split a single JSON object with repeated "d" keys into an array of objects.
+/// Handles LLM output like: {"d":"2026-02-10","t":371,"items":[...],"d":"2026-02-09","t":514,"items":[...]}
+/// Converts to: [{"d":"2026-02-10","t":371,"items":[...]},{"d":"2026-02-09","t":514,"items":[...]}]
+fn split_multiday_object(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+
+    // Quick check: need at least 2 "d": occurrences
+    if trimmed.matches("\"d\":").count() <= 1 {
+        return None;
+    }
+
+    // Find commas at depth 1 that are followed by "d":"
+    let bytes = trimmed.as_bytes();
+    let mut split_positions: Vec<usize> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut esc = false;
+
+    for i in 0..bytes.len() {
+        if esc { esc = false; continue; }
+        if bytes[i] == b'\\' && in_str { esc = true; continue; }
+        if bytes[i] == b'"' {
+            in_str = !in_str;
+            continue;
+        }
+        if in_str { continue; }
+        match bytes[i] {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        // At depth 1, look for comma followed by "d":
+        if depth == 1 && bytes[i] == b',' {
+            let rest = &trimmed[i + 1..];
+            let rest_trimmed = rest.trim_start();
+            if rest_trimmed.starts_with("\"d\":") {
+                split_positions.push(i);
+            }
+        }
+    }
+
+    if split_positions.is_empty() {
+        return None;
+    }
+
+    // Replace each split comma with },{ to create separate objects
+    let mut result = String::with_capacity(trimmed.len() + split_positions.len() * 3);
+    result.push('[');
+
+    let mut last = 0;
+    for &pos in &split_positions {
+        result.push_str(&trimmed[last..pos]);
+        result.push_str("},{");
+        last = pos + 1; // skip the comma
+    }
+    result.push_str(&trimmed[last..]);
+    result.push(']');
+
+    Some(result)
+}
+
 /// Pre-process JSON string to fix duplicate "items" fields in the same object.
 /// LLM sometimes outputs {"d":"...","t":...,"items":[...],"items":[...]} instead of
 /// separate objects per day. This merges all "items" arrays into one.
-fn merge_duplicate_items_fields(json: &str) -> String {
-    // Quick check: if no duplicate "items" pattern, return as-is
-    let first = json.find("\"items\"");
-    if first.is_none() {
-        return json.to_string();
-    }
-    let first_pos = first.unwrap();
-    let rest = &json[first_pos + 7..];
-    if rest.find("\"items\"").is_none() {
-        // Only one "items" key total, or one per object - likely fine
-        // But could still be duplicate within one object; let serde handle it
-        return json.to_string();
-    }
-
-    // Parse as serde_json::Value using a streaming approach won't work for duplicates.
-    // Instead, manually reconstruct: find each top-level object in the array,
-    // and within each object, collect all "items" arrays and merge them.
-    let mut result = String::with_capacity(json.len());
-    let mut chars: Vec<char> = json.chars().collect();
-    let mut i = 0;
-
-    // Find the opening '['
-    while i < chars.len() && chars[i] != '[' {
-        result.push(chars[i]);
-        i += 1;
-    }
-    if i >= chars.len() {
-        return json.to_string();
-    }
-    result.push('[');
-    i += 1;
-
-    let mut first_obj = true;
-    while i < chars.len() {
-        // Skip whitespace
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        if i >= chars.len() || chars[i] == ']' {
-            break;
-        }
-        if chars[i] == ',' {
-            i += 1;
-            continue;
-        }
-        if chars[i] != '{' {
-            // Not an object, just copy
-            result.push(chars[i]);
-            i += 1;
-            continue;
-        }
-
-        // Extract one top-level object by bracket depth
-        let obj_start = i;
-        let mut depth = 0i32;
-        let mut in_str = false;
-        let mut esc = false;
-        let mut obj_end = i;
-        while i < chars.len() {
-            let ch = chars[i];
-            if esc { esc = false; i += 1; continue; }
-            if ch == '\\' && in_str { esc = true; i += 1; continue; }
-            if ch == '"' { in_str = !in_str; i += 1; continue; }
-            if in_str { i += 1; continue; }
-            if ch == '{' { depth += 1; }
-            else if ch == '}' {
-                depth -= 1;
-                if depth == 0 { obj_end = i; i += 1; break; }
-            }
-            i += 1;
-        }
-
-        let obj_str: String = chars[obj_start..=obj_end].iter().collect();
-
-        // Check if this object has duplicate "items" keys
-        let items_count = obj_str.matches("\"items\"").count();
-        if items_count <= 1 {
-            if !first_obj { result.push(','); }
-            result.push_str(&obj_str);
-            first_obj = false;
-            continue;
-        }
-
-        // Has duplicate "items" - extract all items arrays and merge
-        // Strategy: parse the object, collecting all items arrays
-        let mut all_items = String::from("[");
-        let mut other_fields = Vec::new();
-        let mut j = 1; // skip opening {
-        let obj_chars: Vec<char> = obj_str.chars().collect();
-
-        while j < obj_chars.len() {
-            // skip whitespace
-            while j < obj_chars.len() && obj_chars[j].is_whitespace() { j += 1; }
-            if j >= obj_chars.len() || obj_chars[j] == '}' { break; }
-            if obj_chars[j] == ',' { j += 1; continue; }
-
-            // Expect a key
-            if obj_chars[j] != '"' { j += 1; continue; }
-            let key_start = j;
-            j += 1;
-            while j < obj_chars.len() && obj_chars[j] != '"' {
-                if obj_chars[j] == '\\' { j += 1; }
-                j += 1;
-            }
-            j += 1; // closing quote
-            let key: String = obj_chars[key_start..j].iter().collect();
-
-            // skip colon and whitespace
-            while j < obj_chars.len() && (obj_chars[j] == ':' || obj_chars[j].is_whitespace()) { j += 1; }
-
-            // Extract value
-            let val_start = j;
-            if j < obj_chars.len() && (obj_chars[j] == '[' || obj_chars[j] == '{') {
-                let open_ch = obj_chars[j];
-                let close_ch = if open_ch == '[' { ']' } else { '}' };
-                let mut vd = 0i32;
-                let mut vs = false;
-                let mut ve = false;
-                while j < obj_chars.len() {
-                    let ch = obj_chars[j];
-                    if ve { ve = false; j += 1; continue; }
-                    if ch == '\\' && vs { ve = true; j += 1; continue; }
-                    if ch == '"' { vs = !vs; j += 1; continue; }
-                    if vs { j += 1; continue; }
-                    if ch == open_ch { vd += 1; }
-                    else if ch == close_ch { vd -= 1; if vd == 0 { j += 1; break; } }
-                    j += 1;
-                }
-            } else {
-                // primitive value
-                while j < obj_chars.len() && obj_chars[j] != ',' && obj_chars[j] != '}' { j += 1; }
-            }
-            let val: String = obj_chars[val_start..j].iter().collect();
-
-            if key == "\"items\"" {
-                // Append items (strip outer brackets)
-                let trimmed = val.trim();
-                if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                    let inner = &trimmed[1..trimmed.len()-1].trim();
-                    if !inner.is_empty() {
-                        if all_items.len() > 1 { all_items.push(','); }
-                        all_items.push_str(inner);
-                    }
-                }
-            } else {
-                other_fields.push(format!("{}:{}", key, val.trim()));
-            }
-        }
-        all_items.push(']');
-
-        // Reconstruct object
-        if !first_obj { result.push(','); }
-        result.push('{');
-        for (fi, f) in other_fields.iter().enumerate() {
-            if fi > 0 { result.push(','); }
-            result.push_str(f);
-        }
-        if !other_fields.is_empty() { result.push(','); }
-        result.push_str("\"items\":");
-        result.push_str(&all_items);
-        result.push('}');
-        first_obj = false;
-    }
-
-    result.push(']');
-    tracing::info!("merge_duplicate_items: {} -> {} 字符", json.len(), result.len());
-    result
-}
-
 /// Try parsing a JSON string as expense data using multiple format strategies.
 /// Returns None if all attempts fail.
 fn try_parse_expense_json(json_str: &str) -> Option<Vec<ParsedExpenseDay>> {
     let preview: String = json_str.chars().take(300).collect();
     tracing::info!("try_parse 输入 {} 字符, 前300: {}", json_str.len(), preview);
+
+    // Strategy 0: if input is a single object with repeated "d" keys, split into array
+    if let Some(fixed) = split_multiday_object(json_str) {
+        tracing::info!("S0 拆分重复key对象: {} -> {} 字符", json_str.len(), fixed.len());
+        if let Ok(days) = serde_json::from_str::<Vec<CompactDay>>(&fixed) {
+            let total_items: usize = days.iter().map(|d| d.items.len()).sum();
+            if !days.is_empty() && total_items > 0 {
+                tracing::info!("S0成功: {} 天, {} 项", days.len(), total_items);
+                return Some(compact_to_full(days));
+            }
+        }
+    }
 
     // Strategy 1: parse as array of compact format
     match serde_json::from_str::<Vec<CompactDay>>(json_str) {
@@ -635,7 +544,7 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
 
 /// Compress image to WebP format with max dimension constraint (runs in blocking thread).
 /// Returns (webp_bytes, mime_type). PDF files are returned as-is.
-fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_dim: u32) -> Result<(Vec<u8>, &'static str), String> {
+fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_width: u32) -> Result<(Vec<u8>, &'static str), String> {
     let lower = file_name.to_lowercase();
     if lower.ends_with(".pdf") {
         return Ok((raw_bytes.to_vec(), "application/pdf"));
@@ -645,9 +554,9 @@ fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_dim: u32) -> Re
         .map_err(|e| format!("解析图片失败: {}", e))?;
 
     let (w, h) = (img.width(), img.height());
-    let resized = if w > max_dim || h > max_dim {
-        let ratio = max_dim as f64 / w.max(h) as f64;
-        let new_w = (w as f64 * ratio) as u32;
+    let resized = if w > max_width {
+        let ratio = max_width as f64 / w as f64;
+        let new_w = max_width;
         let new_h = (h as f64 * ratio) as u32;
         tracing::info!("图片缩放: {}x{} -> {}x{}", w, h, new_w, new_h);
         img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
@@ -946,7 +855,7 @@ async fn recognize_expense_bytes(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 8192
+        "max_tokens": 16384
     });
 
     let api_url = "https://api.siliconflow.cn/v1/chat/completions";
@@ -1288,81 +1197,78 @@ pub async fn merge_chunks(
     let mut chunks = req.chunks;
     chunks.sort_by_key(|c| c.chunk_index);
 
-    // Build merge prompt with all chunk data
-    let mut chunks_text = String::new();
+    // --- Algorithmic merge: no LLM needed ---
+    // 1. Flatten all items, tracking current date from chunks that have one
+    // 2. Group by date
+    // 3. Deduplicate within each day (same name+quantity+amount = same line item)
+
+    tracing::info!("算法合并 {} 个条带的识别结果", chunks.len());
+
+    // Collect all (date, item) pairs in strip order, tracking last known date
+    let mut current_date = String::new();
+    let mut day_map: indexmap::IndexMap<String, Vec<ParsedExpenseItem>> = indexmap::IndexMap::new();
+
+    let mut raw_count: usize = 0;
     for chunk in &chunks {
-        chunks_text.push_str(&format!("\n--- 区域 {} ---\n", chunk.chunk_index + 1));
         for day in &chunk.days {
-            let date_str = if day.expense_date.is_empty() { "未知日期" } else { &day.expense_date };
-            chunks_text.push_str(&format!("日期: {}, 合计: {:.2}\n", date_str, day.total_amount));
+            // Update current date if this chunk has a real date
+            if !day.expense_date.is_empty() {
+                current_date = day.expense_date.clone();
+            }
+
+            let date_key = if current_date.is_empty() {
+                "未知日期".to_string()
+            } else {
+                current_date.clone()
+            };
+
+            let items_list = day_map.entry(date_key).or_default();
             for item in &day.items {
-                chunks_text.push_str(&format!("  - {} {} ¥{:.2}\n", item.name, item.quantity, item.amount));
+                raw_count += 1;
+                items_list.push(item.clone());
             }
         }
     }
 
-    let merge_prompt = format!(
-        r#"以下是同一张住院消费清单图片被分成 {} 个区域后分别识别的结果。相邻区域之间有重叠，可能导致部分项目重复出现。
-
-请你合并这些结果，完成以下任务：
-1. 去除重复项目（相同名称、数量、金额的项目只保留一个）
-2. 将所有项目按日期正确归组
-3. 如果某些项目缺少日期（标为"未知日期"），根据上下文推断其所属日期
-4. 重新计算每天的合计金额
-5. 按日期升序排列
-
-返回合并后的JSON数组，格式：
-[{{"d":"YYYY-MM-DD","t":合计,"items":[{{"n":"名称","q":"×数量","a":金额}}]}}]
-只返回JSON，不要有任何额外说明。
-
-识别结果：
-{}"#,
-        chunks.len(),
-        chunks_text
-    );
-
-    let client = state.http_client.clone();
-    let api_key = super::get_llm_api_key();
-
-    let body = serde_json::json!({
-        "model": super::LLM_MODEL_FAST,
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是一个数据整理助手。请根据多个局部识别结果，合并去重后输出完整的消费清单数据。"
-            },
-            {
-                "role": "user",
-                "content": merge_prompt
+    // Deduplicate within each day: same (name, quantity, amount) = same line item
+    for (_date, items) in day_map.iter_mut() {
+        let mut seen: Vec<(String, String, i64)> = Vec::new();
+        items.retain(|item| {
+            let amount_cents = (item.amount * 100.0).round() as i64;
+            let key = (item.name.clone(), item.quantity.clone(), amount_cents);
+            if seen.contains(&key) {
+                false // duplicate within same day
+            } else {
+                seen.push(key);
+                true
             }
-        ],
-        "temperature": 0.1,
-        "max_tokens": 8192
-    });
+        });
+    }
 
-    tracing::info!("调用 LLM 合并 {} 个条带的识别结果", chunks.len());
+    // Sort by date and build result
+    let mut date_keys: Vec<String> = day_map.keys().cloned().collect();
+    date_keys.sort();
 
-    let resp = super::llm_post_with_retry(&client, super::LLM_API_URL, &api_key, &body)
-        .await
-        .map_err(|e| AppError::Internal(format!("合并请求失败: {}", e)))?;
-
-    let resp_json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("解析合并响应失败: {}", e)))?;
-
-    let raw_content = super::extract_llm_content(&resp_json)
-        .map_err(|e| AppError::Internal(e))?;
-    let content = strip_think_blocks(&raw_content);
-
-    let json_str = super::extract_json_block(&content)
-        .map_err(|e| AppError::Internal(format!("合并结果提取 JSON 失败: {}", e)))?;
-
-    let merged_days = try_parse_expense_json(&json_str)
-        .ok_or_else(|| AppError::Internal("合并结果解析失败".to_string()))?;
+    let merged_days: Vec<ParsedExpenseDay> = date_keys
+        .into_iter()
+        .map(|date| {
+            let items = day_map.remove(&date).unwrap_or_default();
+            let total: f64 = items.iter().map(|i| i.amount).sum();
+            let expense_date = if date == "未知日期" {
+                String::new()
+            } else {
+                date
+            };
+            ParsedExpenseDay {
+                expense_date,
+                total_amount: (total * 100.0).round() / 100.0,
+                items,
+            }
+        })
+        .collect();
 
     let total_items: usize = merged_days.iter().map(|d| d.items.len()).sum();
-    tracing::info!("合并完成: {} 天, {} 项", merged_days.len(), total_items);
+    tracing::info!("合并完成: {} 天, {} 项 (原始 {} 项, 去重 {} 项)", merged_days.len(), total_items, raw_count, raw_count - total_items);
 
     let day_results: Vec<DayParseResult> = merged_days
         .into_iter()

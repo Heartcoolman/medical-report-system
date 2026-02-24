@@ -252,7 +252,7 @@ export const api = {
         timeout,
       );
     },
-    mergeChunks(data: MergeChunksReq, timeout = 60000) {
+    mergeChunks(data: MergeChunksReq, timeout = 300000) {
       return request<ExpenseParseResponse>(
         '/api/expenses/merge-chunks',
         jsonRequest('POST', data),

@@ -10,33 +10,6 @@ use crate::AppState;
 
 use super::{get_interpret_api_key, INTERPRET_API_URL, INTERPRET_MODEL};
 
-/// Remove markdown formatting symbols from LLM output so the frontend
-/// receives clean plain text.
-fn strip_markdown(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            // Skip all * (bold / italic markers)
-            '*' => {}
-            // Skip # at start of line (heading markers)
-            '#' => {
-                // Also eat trailing spaces after ###...
-                while chars.peek() == Some(&'#') {
-                    chars.next();
-                }
-                if chars.peek() == Some(&' ') {
-                    chars.next();
-                }
-            }
-            // Skip ` (inline code)
-            '`' => {}
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------
 // Shared SSE streaming helper
 // ---------------------------------------------------------------------------

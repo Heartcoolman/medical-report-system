@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use std::collections::HashMap;
 
 use crate::error::AppError;
-use crate::models::{ApiResponse, Report, TestItem};
+use crate::models::ApiResponse;
 use crate::AppState;
 
 use super::{get_llm_api_key, LLM_API_URL, LLM_MODEL_FAST};
@@ -281,42 +281,19 @@ pub async fn backfill_canonical_names(
     let db = state.db.clone();
 
     // Phase 1: Scan ALL test items and group their names by report_type
-    let (all_items, items_by_report_type) = tokio::task::spawn_blocking(
-        move || -> Result<(Vec<(TestItem, String)>, HashMap<String, Vec<String>>), AppError> {
-            let items_tree = db.db.open_tree("test_items")?;
-            let reports_tree = db.db.open_tree("reports")?;
-
-            let mut all_items = Vec::new();
-            let mut report_type_cache: HashMap<String, String> = HashMap::new();
-            let mut by_report_type: HashMap<String, Vec<String>> = HashMap::new();
-
-            for entry in items_tree.iter() {
-                let (_, val) = entry?;
-                let item: TestItem = serde_json::from_slice(&val)?;
-
-                let report_type = if let Some(rt) = report_type_cache.get(&item.report_id) {
-                    rt.clone()
-                } else {
-                    let rt = if let Some(rv) = reports_tree.get(item.report_id.as_bytes())? {
-                        let report: Report = serde_json::from_slice(&rv)?;
-                        report.report_type
-                    } else {
-                        "未知".to_string()
-                    };
-                    report_type_cache.insert(item.report_id.clone(), rt.clone());
-                    rt
-                };
-
-                by_report_type
-                    .entry(report_type.clone())
-                    .or_default()
-                    .push(item.name.clone());
-                all_items.push((item, report_type));
-            }
-
-            Ok((all_items, by_report_type))
-        },
-    )
+    let (all_items, items_by_report_type) = tokio::task::spawn_blocking(move || {
+        let raw_items = db.list_test_items_for_normalization()?;
+        let mut items_by_report_type: HashMap<String, Vec<String>> = HashMap::new();
+        let mut grouped_items: Vec<(crate::models::TestItem, String)> = Vec::with_capacity(raw_items.len());
+        for (item, report_type) in raw_items {
+            items_by_report_type
+                .entry(report_type.clone())
+                .or_default()
+                .push(item.name.clone());
+            grouped_items.push((item, report_type));
+        }
+        Ok::<_, AppError>((grouped_items, items_by_report_type))
+    })
     .await
     .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
 
@@ -346,22 +323,28 @@ pub async fn backfill_canonical_names(
 
     // Phase 3: Update ALL items in database
     let db = state.db.clone();
-    let updated_count = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
-        let items_tree = db.db.open_tree("test_items")?;
-        let mut count = 0usize;
-        for (mut item, report_type) in all_items {
+    let updates: Vec<(String, String)> = all_items
+        .into_iter()
+        .filter_map(|(item, report_type)| {
             let scoped_key = scoped_name_key(&report_type, &item.name);
-            if let Some(canonical) = name_map
+            name_map
                 .get(&scoped_key)
                 .or_else(|| name_map.get(&item.name))
-            {
-                if item.canonical_name != *canonical {
-                    item.canonical_name = canonical.clone();
-                    let val = serde_json::to_vec(&item)?;
-                    items_tree.insert(item.id.as_bytes(), val)?;
-                    count += 1;
-                }
-            }
+                .and_then(|canonical| {
+                    if item.canonical_name == *canonical {
+                        None
+                    } else {
+                        Some((item.id, canonical.clone()))
+                    }
+                })
+        })
+        .collect();
+
+    let updated_count = tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+        let updates = updates;
+        let mut count = 0usize;
+        if !updates.is_empty() {
+            count = db.update_test_item_canonical_names(updates)?;
         }
         Ok(count)
     })
