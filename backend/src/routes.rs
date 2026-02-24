@@ -19,6 +19,7 @@ pub fn build_router() -> Router<AppState> {
         .merge(ocr_routes())
         .merge(temperature_routes())
         .merge(interpret_routes())
+        .merge(expense_routes())
         .merge(admin_routes())
 }
 
@@ -150,6 +151,43 @@ fn interpret_routes() -> Router<AppState> {
         .route(
             "/api/patients/:patient_id/trends/:item_name/interpret-time",
             get(handlers::interpret::interpret_trend_time),
+        )
+}
+
+fn expense_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/patients/:patient_id/expenses/parse",
+            post(handlers::expense::parse_expense).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE)),
+        )
+        .route(
+            "/api/patients/:patient_id/expenses/confirm",
+            post(handlers::expense::confirm_expense),
+        )
+        .route(
+            "/api/patients/:patient_id/expenses/batch-confirm",
+            post(handlers::expense::batch_confirm_expense),
+        )
+        .route(
+            "/api/patients/:patient_id/expenses",
+            get(handlers::expense::list_expenses),
+        )
+        .route(
+            "/api/expenses/parse-chunk",
+            post(handlers::expense::parse_chunk).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE)),
+        )
+        .route(
+            "/api/expenses/merge-chunks",
+            post(handlers::expense::merge_chunks),
+        )
+        .route(
+            "/api/expenses/analyze",
+            post(handlers::expense::analyze_expense_day),
+        )
+        .route(
+            "/api/expenses/:id",
+            get(handlers::expense::get_expense)
+                .delete(handlers::expense::delete_expense),
         )
 }
 

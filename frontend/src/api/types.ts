@@ -12,6 +12,13 @@ export interface PaginatedList<T> {
   page_size: number;
 }
 
+export type InterpretationContent = string | { points: string[] } | string[];
+
+export interface InterpretationCache {
+  content: InterpretationContent;
+  created_at: string;
+}
+
 // --- Patient ---
 
 export interface Patient {
@@ -225,6 +232,105 @@ export interface UpdateTestItemReq {
   unit?: string;
   reference_range?: string;
   status?: 'normal' | 'high' | 'low';
+}
+
+// --- Expense ---
+
+export type ExpenseCategory = 'drug' | 'test' | 'treatment' | 'material' | 'nursing' | 'other';
+
+export interface DailyExpense {
+  id: string;
+  patient_id: string;
+  expense_date: string;
+  total_amount: number;
+  drug_analysis: string;
+  treatment_analysis: string;
+  created_at: string;
+}
+
+export interface ExpenseItem {
+  id: string;
+  expense_id: string;
+  name: string;
+  category: ExpenseCategory;
+  quantity: string;
+  amount: number;
+  note: string;
+}
+
+export interface DailyExpenseDetail extends DailyExpense {
+  items: ExpenseItem[];
+}
+
+export interface DailyExpenseSummary extends DailyExpense {
+  item_count: number;
+  drug_count: number;
+  test_count: number;
+  treatment_count: number;
+}
+
+export interface ParsedExpenseItem {
+  name: string;
+  category: string;
+  quantity: string;
+  amount: number;
+  note: string;
+}
+
+export interface ParsedExpenseDay {
+  expense_date: string;
+  total_amount: number;
+  items: ParsedExpenseItem[];
+}
+
+export interface DayParseResult {
+  parsed: ParsedExpenseDay;
+  drug_analysis: string;
+  treatment_analysis: string;
+}
+
+export interface ExpenseParseResponse {
+  days: DayParseResult[];
+}
+
+export interface ConfirmExpenseReq {
+  expense_date: string;
+  total_amount: number;
+  drug_analysis: string;
+  treatment_analysis: string;
+  items: {
+    name: string;
+    category: ExpenseCategory;
+    quantity: string;
+    amount: number;
+    note: string;
+  }[];
+}
+
+export interface BatchConfirmExpenseReq {
+  days: ConfirmExpenseReq[];
+}
+
+// --- Expense Chunk Parsing ---
+
+export interface ExpenseChunkResult {
+  chunk_index: number;
+  days: ParsedExpenseDay[];
+}
+
+export interface MergeChunksReq {
+  chunks: ExpenseChunkResult[];
+}
+
+// --- Expense Analysis ---
+
+export interface AnalyzeExpenseReq {
+  items: ParsedExpenseItem[];
+}
+
+export interface AnalyzeExpenseResp {
+  drug_analysis: string;
+  treatment_analysis: string;
 }
 
 // --- Trends ---

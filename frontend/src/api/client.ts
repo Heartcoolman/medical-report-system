@@ -1,6 +1,7 @@
 import type {
   ApiResponse,
   PaginatedList,
+  InterpretationCache,
   Patient,
   PatientWithStats,
   PatientReq,
@@ -22,6 +23,15 @@ import type {
   TrendItemInfo,
   TemperatureRecord,
   CreateTemperatureReq,
+  ExpenseParseResponse,
+  ConfirmExpenseReq,
+  BatchConfirmExpenseReq,
+  DailyExpenseDetail,
+  DailyExpenseSummary,
+  AnalyzeExpenseReq,
+  AnalyzeExpenseResp,
+  ParsedExpenseDay,
+  MergeChunksReq,
 } from './types';
 
 async function request<T>(url: string, options?: RequestInit, timeout = 12000): Promise<T> {
@@ -104,7 +114,7 @@ export const api = {
       return request<ReportDetail>(`/api/reports/${id}`);
     },
     getInterpretation(id: string) {
-      return request<{ content: string; created_at: string } | null>(`/api/reports/${id}/interpret-cache`);
+      return request<InterpretationCache | null>(`/api/reports/${id}/interpret-cache`);
     },
     create(patientId: string, data: CreateReportReq) {
       return request<Report>(`/api/patients/${patientId}/reports`, jsonRequest('POST',data));
@@ -198,6 +208,62 @@ export const api = {
     getData(patientId: string, itemName: string, reportType?: string) {
       return request<TrendPoint[]>(
         `/api/patients/${patientId}/trends${qs({ item_name: itemName, report_type: reportType })}`,
+      );
+    },
+  },
+
+  expenses: {
+    parse(patientId: string, file: File, timeout = 600000) {
+      const form = new FormData();
+      form.append('file', file);
+      return request<ExpenseParseResponse>(
+        `/api/patients/${patientId}/expenses/parse`,
+        { method: 'POST', body: form },
+        timeout,
+      );
+    },
+    confirm(patientId: string, data: ConfirmExpenseReq) {
+      return request<DailyExpenseDetail>(
+        `/api/patients/${patientId}/expenses/confirm`,
+        jsonRequest('POST', data),
+      );
+    },
+    batchConfirm(patientId: string, data: BatchConfirmExpenseReq) {
+      return request<DailyExpenseDetail[]>(
+        `/api/patients/${patientId}/expenses/batch-confirm`,
+        jsonRequest('POST', data),
+      );
+    },
+    list(patientId: string) {
+      return request<DailyExpenseSummary[]>(`/api/patients/${patientId}/expenses`);
+    },
+    get(id: string) {
+      return request<DailyExpenseDetail>(`/api/expenses/${id}`);
+    },
+    delete(id: string) {
+      return request<void>(`/api/expenses/${id}`, { method: 'DELETE' });
+    },
+    parseChunk(file: File, timeout = 300000) {
+      const form = new FormData();
+      form.append('file', file);
+      return request<ParsedExpenseDay[]>(
+        '/api/expenses/parse-chunk',
+        { method: 'POST', body: form },
+        timeout,
+      );
+    },
+    mergeChunks(data: MergeChunksReq, timeout = 60000) {
+      return request<ExpenseParseResponse>(
+        '/api/expenses/merge-chunks',
+        jsonRequest('POST', data),
+        timeout,
+      );
+    },
+    analyze(data: AnalyzeExpenseReq) {
+      return request<AnalyzeExpenseResp>(
+        '/api/expenses/analyze',
+        jsonRequest('POST', data),
+        30000,
       );
     },
   },
