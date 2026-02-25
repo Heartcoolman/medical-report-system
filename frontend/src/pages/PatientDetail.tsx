@@ -1,4 +1,4 @@
-import { createSignal, createResource, createMemo, Show, For } from 'solid-js'
+import { createSignal, createResource, createMemo, Show, For, onCleanup } from 'solid-js'
 import { A, useNavigate, useParams } from '@solidjs/router'
 import { Button, Card, CardBody, Badge, Modal, Skeleton, Empty, Input, useToast, TemperatureChart, TemperatureWeeklyChart, BottomSheet, FloatingActionButton } from '@/components'
 import { cn } from '@/lib/utils'
@@ -70,6 +70,77 @@ export default function PatientDetail() {
   const [tempNote, setTempNote] = createSignal('')
   const [tempSubmitting, setTempSubmitting] = createSignal(false)
   const [tempViewMode, setTempViewMode] = createSignal<'day' | 'week'>('day')
+
+  // Temperature measurement timer
+  const [showTimerModal, setShowTimerModal] = createSignal(false)
+  const [timerSeconds, setTimerSeconds] = createSignal(300) // 5 minutes
+  const [timerRunning, setTimerRunning] = createSignal(false)
+  let timerInterval: number | undefined
+
+  const timerDisplay = createMemo(() => {
+    const s = timerSeconds()
+    const min = Math.floor(s / 60)
+    const sec = s % 60
+    return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+  })
+
+  const timerProgress = createMemo(() => 1 - timerSeconds() / 300)
+
+  function playAlertSound() {
+    try {
+      const ctx = new AudioContext()
+      const playBeep = (freq: number, startTime: number, duration: number) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.frequency.value = freq
+        osc.type = 'sine'
+        gain.gain.setValueAtTime(0.3, startTime)
+        gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration)
+        osc.start(startTime)
+        osc.stop(startTime + duration)
+      }
+      // Three ascending beeps
+      playBeep(660, ctx.currentTime, 0.2)
+      playBeep(880, ctx.currentTime + 0.25, 0.2)
+      playBeep(1100, ctx.currentTime + 0.5, 0.3)
+    } catch {}
+    // Vibrate on mobile
+    try { navigator.vibrate?.([200, 100, 200, 100, 200]) } catch {}
+  }
+
+  function startTimer() {
+    setTimerSeconds(300)
+    setTimerRunning(true)
+    setShowTimerModal(true)
+    timerInterval = window.setInterval(() => {
+      setTimerSeconds(prev => {
+        if (prev <= 1) {
+          clearInterval(timerInterval)
+          setTimerRunning(false)
+          playAlertSound()
+          toast('success', '5分钟到！请测量体温')
+          // Auto open temp input after a short delay
+          setTimeout(() => {
+            setShowTimerModal(false)
+            openTempModal()
+          }, 1500)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  function cancelTimer() {
+    clearInterval(timerInterval)
+    setTimerRunning(false)
+    setShowTimerModal(false)
+    setTimerSeconds(300)
+  }
+
+  onCleanup(() => clearInterval(timerInterval))
 
   const computeAge = (dob: string) => {
     if (!dob) return null
@@ -443,6 +514,9 @@ export default function PatientDetail() {
                         周视图
                       </button>
                     </div>
+                    <Button variant="outline" size="sm" onClick={startTimer}>
+                      体温测量
+                    </Button>
                     <Button variant="outline" size="sm" onClick={openTempModal}>
                       添加体温
                     </Button>
@@ -850,6 +924,45 @@ export default function PatientDetail() {
                     onInput={(e) => setTempNote(e.currentTarget.value)}
                   />
                 </div>
+              </div>
+            </Modal>
+
+            {/* Temperature Measurement Timer Modal */}
+            <Modal
+              open={showTimerModal()}
+              onClose={cancelTimer}
+              title="体温测量计时"
+              size="sm"
+              footer={
+                <Show when={timerRunning()} fallback={
+                  <Button variant="outline" onClick={() => setShowTimerModal(false)}>关闭</Button>
+                }>
+                  <Button variant="outline" onClick={cancelTimer}>取消测量</Button>
+                </Show>
+              }
+            >
+              <div class="flex flex-col items-center py-6 gap-4">
+                <div class="relative w-40 h-40">
+                  <svg class="w-full h-full -rotate-90" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="45" fill="none" stroke="var(--color-border)" stroke-width="6" />
+                    <circle
+                      cx="50" cy="50" r="45" fill="none"
+                      stroke="var(--color-accent)"
+                      stroke-width="6"
+                      stroke-linecap="round"
+                      stroke-dasharray={`${timerProgress() * 283} 283`}
+                      style="transition: stroke-dasharray 0.3s linear"
+                    />
+                  </svg>
+                  <div class="absolute inset-0 flex items-center justify-center">
+                    <span class="text-3xl font-mono font-semibold text-content">{timerDisplay()}</span>
+                  </div>
+                </div>
+                <Show when={timerRunning()} fallback={
+                  <p class="text-sm text-accent font-medium">测量完成！正在打开记录...</p>
+                }>
+                  <p class="text-sm text-content-secondary">请将体温计放置好，计时结束后将提醒您</p>
+                </Show>
               </div>
             </Modal>
 
