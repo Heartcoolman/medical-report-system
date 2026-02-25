@@ -1,3 +1,4 @@
+pub mod audit_handler;
 pub mod expense;
 pub mod interpret;
 pub mod normalize;
@@ -5,6 +6,7 @@ pub mod ocr;
 pub mod patients;
 pub mod reports;
 pub mod temperatures;
+pub mod user_settings;
 
 // Shared LLM API constants (used by OCR, normalization, grouping, merge check)
 pub const LLM_API_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -19,14 +21,28 @@ pub const LLM_MODEL_FAST: &str = "qwen3.5-plus";
 pub const INTERPRET_API_URL: &str = "https://api.pucode.com/v1/chat/completions";
 pub const INTERPRET_MODEL: &str = "gemini-3.1-pro-high";
 
-/// Read LLM_API_KEY from environment variable.
-pub fn get_llm_api_key() -> String {
+/// Read LLM_API_KEY: prefer user key, fallback to environment variable.
+pub fn get_llm_api_key(db: &crate::db::Database, user_id: &str) -> String {
+    if let Some(key) = user_settings::get_user_api_key(db, user_id, "llm") {
+        return key;
+    }
     std::env::var("LLM_API_KEY").expect("环境变量 LLM_API_KEY 未设置")
 }
 
-/// Read INTERPRET_API_KEY from environment variable.
-pub fn get_interpret_api_key() -> String {
+/// Read INTERPRET_API_KEY: prefer user key, fallback to environment variable.
+pub fn get_interpret_api_key(db: &crate::db::Database, user_id: &str) -> String {
+    if let Some(key) = user_settings::get_user_api_key(db, user_id, "interpret") {
+        return key;
+    }
     std::env::var("INTERPRET_API_KEY").expect("环境变量 INTERPRET_API_KEY 未设置")
+}
+
+/// Read SILICONFLOW_API_KEY: prefer user key, fallback to environment variable.
+pub fn get_siliconflow_api_key(db: &crate::db::Database, user_id: &str) -> String {
+    if let Some(key) = user_settings::get_user_api_key(db, user_id, "siliconflow") {
+        return key;
+    }
+    std::env::var("SILICONFLOW_API_KEY").expect("环境变量 SILICONFLOW_API_KEY 未设置")
 }
 
 /// Strip `<think>...</think>` blocks from LLM responses.

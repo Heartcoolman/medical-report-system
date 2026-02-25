@@ -6,10 +6,11 @@ import {
   on,
   Show,
 } from 'solid-js'
-import { A, useLocation } from '@solidjs/router'
+import { A, useLocation, useNavigate } from '@solidjs/router'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/theme'
 import { Button } from '@/components'
+import { currentUser, logout } from '@/stores/auth'
 
 type MobileMenuTransitionState = 'closed' | 'opening' | 'open' | 'closing'
 
@@ -18,6 +19,7 @@ const MOBILE_MENU_DURATION = 180
 
 export default function AppLayout(props: ParentProps) {
   const { theme, toggleTheme } = useTheme()
+  const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = createSignal(false)
   const location = useLocation()
   const routeKey = () => `${location.pathname}${location.search}`
@@ -103,6 +105,11 @@ export default function AppLayout(props: ParentProps) {
     { href: '/edit-logs', label: '修改日志' },
   ]
 
+  const handleLogout = () => {
+    logout()
+    navigate('/login', { replace: true })
+  }
+
   const isActive = (href: string) => {
     if (href === '/') return location.pathname === '/'
     return location.pathname.startsWith(href)
@@ -141,8 +148,35 @@ export default function AppLayout(props: ParentProps) {
               </div>
             </div>
 
-            {/* Right Side: Theme Toggle + Mobile Menu */}
+            {/* Right Side: User Info + Theme Toggle + Mobile Menu */}
             <div class="flex items-center gap-1">
+              {/* Desktop user menu */}
+              <div class="hidden md:flex items-center gap-2">
+                <Show when={currentUser()}>
+                  <span class="text-sm text-content-secondary">{currentUser()!.username}</span>
+                </Show>
+                <A
+                  href="/settings"
+                  class={cn(
+                    'nav-link-base',
+                    isActive('/settings')
+                      ? 'nav-link-active'
+                      : 'text-content-secondary hover:text-content hover:bg-surface-secondary',
+                  )}
+                >
+                  设置
+                </A>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  class="text-content-secondary hover:text-content"
+                  onClick={handleLogout}
+                >
+                  退出
+                </Button>
+              </div>
+
               {/* Theme Toggle */}
               <Button
                 type="button"
@@ -211,6 +245,30 @@ export default function AppLayout(props: ParentProps) {
                   {link.label}
                 </A>
               ))}
+              <div class="border-t border-border/50 mt-2 pt-2">
+                <Show when={currentUser()}>
+                  <div class="px-3 py-2 text-sm text-content-tertiary">{currentUser()!.username}</div>
+                </Show>
+                <A
+                  href="/settings"
+                  class={cn(
+                    'block nav-link-base',
+                    isActive('/settings')
+                      ? 'nav-link-active'
+                      : 'text-content-secondary hover:text-content hover:bg-surface-secondary',
+                  )}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  设置
+                </A>
+                <button
+                  type="button"
+                  class="block w-full text-left nav-link-base text-content-secondary hover:text-content hover:bg-surface-secondary cursor-pointer"
+                  onClick={() => { setMobileMenuOpen(false); handleLogout() }}
+                >
+                  退出
+                </button>
+              </div>
             </div>
           </div>
         </Show>
@@ -253,6 +311,8 @@ function Breadcrumbs() {
       parts.push({ label: '患者详情' })
     } else if (path.match(/^\/reports\/[^/]+$/)) {
       parts.push({ label: '报告详情' })
+    } else if (path === '/settings') {
+      parts.push({ label: '用户设置' })
     }
 
     return parts

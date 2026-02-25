@@ -5,10 +5,11 @@ use axum::{
 use futures_util::StreamExt;
 use tokio_stream::Stream;
 
+use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError};
 use crate::AppState;
 
-use super::{get_interpret_api_key, INTERPRET_API_URL, INTERPRET_MODEL};
+use super::{INTERPRET_API_URL, INTERPRET_MODEL};
 
 // ---------------------------------------------------------------------------
 // Shared SSE streaming helper
@@ -21,6 +22,7 @@ use super::{get_interpret_api_key, INTERPRET_API_URL, INTERPRET_MODEL};
 fn llm_sse_stream(
     client: reqwest::Client,
     prompt: String,
+    api_key: String,
     save_to: Option<(crate::db::Database, String)>,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
     async_stream::stream! {
@@ -42,7 +44,7 @@ fn llm_sse_stream(
         tracing::info!("[interpret] 发送请求到 {}", INTERPRET_API_URL);
         let resp = client
             .post(INTERPRET_API_URL)
-            .header("Authorization", format!("Bearer {}", get_interpret_api_key()))
+            .header("Authorization", format!("Bearer {}", api_key))
             .json(&body)
             .send()
             .await;
@@ -247,9 +249,11 @@ fn format_trend_points(item_name: &str, points: &[crate::models::TrendPoint]) ->
 // ---------------------------------------------------------------------------
 
 pub async fn interpret_single_report(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
     let db = state.db.clone();
     let id_clone = id.clone();
     let report = run_blocking(move || db.get_report(&id_clone)).await?;
@@ -287,7 +291,7 @@ pub async fn interpret_single_report(
     );
 
     let save_to = Some((state.db.clone(), id));
-    let stream = llm_sse_stream(state.http_client.clone(), prompt, save_to);
+    let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, save_to);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -301,10 +305,12 @@ pub struct MultiInterpretQuery {
 }
 
 pub async fn interpret_multi(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Query(params): Query<MultiInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
     let ids: Vec<String> = params
         .report_ids
         .split(',')
@@ -353,7 +359,7 @@ pub async fn interpret_multi(
         report_blocks.join("\n\n")
     );
 
-    let stream = llm_sse_stream(state.http_client.clone(), prompt, None);
+    let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, None);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -362,9 +368,11 @@ pub async fn interpret_multi(
 // ---------------------------------------------------------------------------
 
 pub async fn interpret_all(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
     let db = state.db.clone();
     let pid = patient_id.clone();
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
@@ -401,7 +409,7 @@ pub async fn interpret_all(
         report_blocks.join("\n\n")
     );
 
-    let stream = llm_sse_stream(state.http_client.clone(), prompt, None);
+    let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, None);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -416,10 +424,12 @@ pub struct TrendInterpretQuery {
 }
 
 pub async fn interpret_trend(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path((patient_id, item_name)): Path<(String, String)>,
     Query(params): Query<TrendInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
     let db = state.db.clone();
     let pid = patient_id.clone();
     let name = item_name.clone();
@@ -436,7 +446,7 @@ pub async fn interpret_trend(
         format_trend_points(&item_name, &points)
     );
 
-    let stream = llm_sse_stream(state.http_client.clone(), prompt, None);
+    let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, None);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -445,10 +455,12 @@ pub async fn interpret_trend(
 // ---------------------------------------------------------------------------
 
 pub async fn interpret_trend_time(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path((patient_id, item_name)): Path<(String, String)>,
     Query(params): Query<TrendInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
     let db = state.db.clone();
     let pid = patient_id.clone();
     let name = item_name.clone();
@@ -499,6 +511,6 @@ pub async fn interpret_trend_time(
         changes.join("\n")
     );
 
-    let stream = llm_sse_stream(state.http_client.clone(), prompt, None);
+    let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, None);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }

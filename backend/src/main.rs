@@ -1,16 +1,21 @@
 mod algorithm_engine;
+mod audit;
+pub mod auth;
+mod crypto;
 mod db;
 mod error;
 mod handlers;
+pub mod middleware;
 mod models;
 mod ocr;
 mod routes;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::Method;
+use axum::http::{header, HeaderValue, Method};
+use axum::middleware as axum_mw;
 use axum::response::IntoResponse;
 use db::Database;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 const DB_PATH: &str = "data/yiliao.db";
@@ -36,6 +41,9 @@ async fn main() {
     // Load .env file
     dotenvy::dotenv().ok();
 
+    // Check required API key environment variables at startup
+    check_required_env_vars();
+
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
@@ -49,6 +57,16 @@ async fn main() {
         eprintln!("错误: 无法初始化数据库: {}", e);
         std::process::exit(1);
     });
+
+    // Migrate unencrypted sensitive fields if DB_ENCRYPTION_KEY is set
+    match db.migrate_encrypt_sensitive_fields() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("已加密 {} 条患者敏感数据", n),
+        Err(e) => {
+            eprintln!("错误: 敏感数据加密迁移失败: {}", e);
+            std::process::exit(1);
+        }
+    }
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(300))
@@ -63,14 +81,38 @@ async fn main() {
     let normalize_prefetch_locks =
         std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+    // CORS: read allowed origins from ALLOWED_ORIGINS env var (comma-separated)
+    // Default for development: localhost:5173, 127.0.0.1:5173, localhost:3001
+    let default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3001";
+    let origins_str = std::env::var("ALLOWED_ORIGINS").unwrap_or_else(|_| default_origins.to_string());
+    let origins: Vec<HeaderValue> = origins_str
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                match trimmed.parse::<HeaderValue>() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!("无效的 CORS origin '{}': {}", trimmed, e);
+                        None
+                    }
+                }
+            }
+        })
+        .collect();
+
+    tracing::info!("CORS 允许的 origins: {:?}", origins);
+
     let cors = CorsLayer::new()
-        .allow_origin([
-            "http://localhost:5173".parse().unwrap(),
-            "http://127.0.0.1:5173".parse().unwrap(),
-            "http://localhost:3001".parse().unwrap(),
-        ])
+        .allow_origin(origins)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(Any);
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::ACCEPT,
+        ]);
 
     let state = AppState {
         db,
@@ -78,6 +120,9 @@ async fn main() {
         normalize_prefetch_cache,
         normalize_prefetch_locks,
     };
+
+    // Initialize rate limiter
+    let rate_limit_state = middleware::RateLimitState::new();
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
     let listen_addr = format!("0.0.0.0:{}", port);
@@ -95,8 +140,14 @@ async fn main() {
         .fallback_service(
             ServeDir::new(STATIC_DIR).fallback(spa_fallback),
         )
+        .layer(axum_mw::from_fn(middleware::security_headers))
+        .layer(axum_mw::from_fn(middleware::https_redirect))
+        .layer(axum_mw::from_fn_with_state(
+            rate_limit_state,
+            middleware::rate_limit,
+        ))
         .layer(cors)
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(middleware::MAX_UPLOAD_SIZE))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&listen_addr)
@@ -120,4 +171,47 @@ async fn main() {
         std::process::exit(1);
     }
     tracing::info!("服务已关闭");
+}
+
+/// Check that required environment variables are set at startup.
+/// Prints warnings for missing optional API keys.
+fn check_required_env_vars() {
+    // JWT_SECRET is required for authentication
+    if std::env::var("JWT_SECRET").map(|v| v.is_empty()).unwrap_or(true) {
+        eprintln!("错误: 环境变量 JWT_SECRET 未设置");
+        std::process::exit(1);
+    }
+
+    let optional_keys = [
+        ("LLM_API_KEY", "LLM 识别功能"),
+        ("INTERPRET_API_KEY", "AI 智能解读功能"),
+        ("SILICONFLOW_API_KEY", "视觉 OCR / 消费清单识别功能"),
+    ];
+
+    for (key, desc) in &optional_keys {
+        match std::env::var(key) {
+            Ok(val) if val.is_empty() => {
+                eprintln!("警告: 环境变量 {} 为空，{} 将不可用", key, desc);
+            }
+            Err(_) => {
+                eprintln!("警告: 环境变量 {} 未设置，{} 将不可用", key, desc);
+            }
+            Ok(_) => {
+                eprintln!("信息: {} 已配置 ({})", key, mask_key(key));
+            }
+        }
+    }
+
+    if std::env::var("DB_ENCRYPTION_KEY").map(|v| v.is_empty()).unwrap_or(true) {
+        eprintln!("警告: DB_ENCRYPTION_KEY 未设置，患者敏感数据将以明文存储");
+    }
+}
+
+/// Mask an API key for safe logging: show first 4 chars + "***"
+fn mask_key(env_key: &str) -> String {
+    match std::env::var(env_key) {
+        Ok(val) if val.len() > 4 => format!("{}***", &val[..4]),
+        Ok(val) => format!("{}***", val),
+        Err(_) => "未设置".to_string(),
+    }
 }

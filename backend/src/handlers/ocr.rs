@@ -29,12 +29,33 @@ async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String),
                 .file_name()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("{}.bin", Uuid::new_v4()));
-            let safe_name = format!("{}_{}", Uuid::new_v4(), fname);
-            let path = format!("{}/{}", UPLOADS_DIR, safe_name);
+
+            // Validate file extension
+            crate::middleware::validate_file_extension(&fname)
+                .map_err(AppError::BadRequest)?;
+
             let data = field
                 .bytes()
                 .await
                 .map_err(|e| AppError::BadRequest(format!("读取上传数据失败: {}", e)))?;
+
+            // Validate file size (defense in depth, DefaultBodyLimit also enforces this)
+            if data.len() > crate::middleware::MAX_UPLOAD_SIZE {
+                return Err(AppError::BadRequest(format!(
+                    "文件大小 {} 超过限制 {}MB",
+                    data.len(),
+                    crate::middleware::MAX_UPLOAD_SIZE / 1024 / 1024
+                )));
+            }
+
+            // Validate file type via magic bytes
+            let detected_ext = crate::middleware::validate_file_magic_bytes(&data)
+                .map_err(AppError::BadRequest)?;
+
+            // Generate safe random filename to prevent path traversal
+            let safe_name = crate::middleware::generate_safe_filename(detected_ext);
+            let path = format!("{}/{}", UPLOADS_DIR, safe_name);
+
             tokio::fs::write(&path, &data)
                 .await
                 .map_err(|e| AppError::Internal(format!("写入文件失败: {}", e)))?;
@@ -60,9 +81,11 @@ pub struct OcrParseResult {
 }
 
 pub async fn ocr_parse(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<OcrParseResult>>, AppError> {
+    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (file_path, file_name) = save_upload_file(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -82,7 +105,7 @@ pub async fn ocr_parse(
     // All supported formats go through the vision model directly
     let fp = file_path.clone();
     let c = client.clone();
-    let parsed = match crate::ocr::vision::recognize_file_with_client(&fp, &c).await {
+    let parsed = match crate::ocr::vision::recognize_file_with_client(&fp, &c, &siliconflow_key).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("视觉模型识别失败: {}", e);
@@ -179,9 +202,11 @@ fn normalize_test_items_for_grouping(report_type: &str, items: &[TestItem]) -> V
 }
 
 pub async fn suggest_groups(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     Json(req): Json<SuggestGroupsReq>,
 ) -> Result<Json<ApiResponse<SuggestGroupsResult>>, AppError> {
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     let empty_result = SuggestGroupsResult {
         groups: vec![0; req.files.len()],
         existing_merges: vec![],
@@ -312,7 +337,7 @@ pub async fn suggest_groups(
                     &existing_infos[ei].sample_date,
                     &existing_infos[ei].item_names,
                 );
-                match llm_verify_merge(&client, &prompt).await {
+                match llm_verify_merge(&client, &prompt, &api_key).await {
                     Some(true) => {
                         extra_existing_merges.push(ExistingMerge {
                             file_index: ui,
@@ -352,7 +377,7 @@ pub async fn suggest_groups(
                     other.sample_date,
                     other.item_names,
                 );
-                if let Some(true) = llm_verify_merge(&client, &prompt).await {
+                if let Some(true) = llm_verify_merge(&client, &prompt, &api_key).await {
                     // Group them together
                     if groups[ui] == 0 {
                         // Assign a new group ID
@@ -383,7 +408,7 @@ pub async fn suggest_groups(
 
 /// Call LLM to verify a merge decision for uncertain cases.
 /// Returns Some(true) for merge, Some(false) for no-merge, None on error.
-async fn llm_verify_merge(client: &reqwest::Client, prompt: &str) -> Option<bool> {
+async fn llm_verify_merge(client: &reqwest::Client, prompt: &str, api_key: &str) -> Option<bool> {
     let body = serde_json::json!({
         "model": super::LLM_MODEL_FAST,
         "messages": [
@@ -394,7 +419,7 @@ async fn llm_verify_merge(client: &reqwest::Client, prompt: &str) -> Option<bool
         "enable_thinking": false,
     });
 
-    match super::llm_post_with_retry(client, super::LLM_API_URL, &super::get_llm_api_key(), &body).await {
+    match super::llm_post_with_retry(client, super::LLM_API_URL, api_key, &body).await {
         Ok(resp) => {
             let resp_json: serde_json::Value = resp.json().await.ok()?;
             let content = super::extract_llm_content(&resp_json).ok()?;
@@ -508,6 +533,7 @@ async fn get_or_compute_normalize_name_map(
     state: &AppState,
     patient_id: &str,
     reports: &[ConfirmReportReq],
+    api_key: &str,
 ) -> std::collections::HashMap<String, String> {
     let items_by_report_type = build_items_by_report_type(reports);
     if items_by_report_type.is_empty() {
@@ -574,6 +600,7 @@ async fn get_or_compute_normalize_name_map(
                 &state.http_client,
                 &items_by_report_type,
                 &existing_canonical,
+                api_key,
             )
             .await;
 
@@ -607,10 +634,12 @@ async fn get_or_compute_normalize_name_map(
 
 /// Merge check endpoint: run LLM merge detection separately so frontend can show progress.
 pub async fn merge_check(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<MergeCheckResult>>, AppError> {
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     tracing::info!(
         ">>> merge_check 收到请求: patient={}, reports={}",
         patient_id,
@@ -810,7 +839,7 @@ pub async fn merge_check(
                 &er.item_names,
             );
 
-            if let Some(true) = llm_verify_merge(&client, &prompt).await {
+            if let Some(true) = llm_verify_merge(&client, &prompt, &api_key).await {
                 let input_idx = new_report_indices[ni_local];
                 merges.push(MergeDecision {
                     input_index: input_idx,
@@ -842,17 +871,19 @@ pub async fn merge_check(
 
 /// Prefetch normalization map in advance, so confirm step can reuse it.
 pub async fn prefetch_normalize(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<std::collections::HashMap<String, String>>>, AppError> {
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     tracing::info!(
         ">>> prefetch_normalize 收到请求: patient={}, reports={}",
         patient_id,
         req.reports.len()
     );
     let t0 = std::time::Instant::now();
-    let name_map = get_or_compute_normalize_name_map(&state, &patient_id, &req.reports).await;
+    let name_map = get_or_compute_normalize_name_map(&state, &patient_id, &req.reports, &api_key).await;
     tracing::info!(
         "<<< prefetch_normalize 完成: {:.1}s, 映射数={}",
         t0.elapsed().as_secs_f64(),
@@ -869,10 +900,12 @@ pub async fn prefetch_normalize(
 }
 
 pub async fn batch_confirm(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<Vec<ReportDetail>>>, AppError> {
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     // Validate inputs upfront (no DB needed)
     for report_req in &req.reports {
         if report_req.report_type.trim().is_empty() {
@@ -974,7 +1007,7 @@ pub async fn batch_confirm(
 
         if has_missing_name {
             let shared_name_map =
-                get_or_compute_normalize_name_map(&state, &patient_id, &req.reports).await;
+                get_or_compute_normalize_name_map(&state, &patient_id, &req.reports, &api_key).await;
             for (k, v) in shared_name_map {
                 name_map.entry(k).or_insert(v);
             }

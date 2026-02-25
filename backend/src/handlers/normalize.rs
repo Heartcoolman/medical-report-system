@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::models::ApiResponse;
 use crate::AppState;
 
-use super::{get_llm_api_key, LLM_API_URL, LLM_MODEL_FAST};
+use super::{LLM_API_URL, LLM_MODEL_FAST};
 
 const SCOPED_KEY_SEP: char = '\u{001F}';
 
@@ -44,6 +44,7 @@ pub async fn normalize_item_names(
     client: &reqwest::Client,
     items_by_report_type: &HashMap<String, Vec<String>>,
     existing_canonical_names: &[String],
+    api_key: &str,
 ) -> HashMap<String, String> {
     // Normalize and deduplicate each report type input first, so downstream
     // behavior is deterministic and context-aware.
@@ -142,7 +143,7 @@ pub async fn normalize_item_names(
             let mut unresolved_input: HashMap<String, Vec<String>> = HashMap::new();
             unresolved_input.insert(report_type.clone(), names.clone());
             let llm_map =
-                llm_normalize_item_names(client, &unresolved_input, existing_canonical_names).await;
+                llm_normalize_item_names(client, &unresolved_input, existing_canonical_names, api_key).await;
 
             llm_resolved += llm_map.len();
             for name in names {
@@ -186,6 +187,7 @@ async fn llm_normalize_item_names(
     client: &reqwest::Client,
     items_by_report_type: &HashMap<String, Vec<String>>,
     existing_canonical_names: &[String],
+    api_key: &str,
 ) -> HashMap<String, String> {
     let system_prompt = "你是一个医学检验项目名称标准化助手。将输入的检验项目名称标准化为规范名称。\n\n\
          规则：\n\
@@ -236,7 +238,7 @@ async fn llm_normalize_item_names(
         user_prompt.push_str(&format!("【{}】: [{}]\n", rt, names_str));
     }
 
-    match call_llm_json(client, system_prompt, &user_prompt).await {
+    match call_llm_json(client, system_prompt, &user_prompt, api_key).await {
         Ok(map) => map,
         Err(e) => {
             tracing::warn!("LLM 标准化回退失败: {}", e);
@@ -250,6 +252,7 @@ async fn call_llm_json(
     client: &reqwest::Client,
     system_prompt: &str,
     user_prompt: &str,
+    api_key: &str,
 ) -> Result<HashMap<String, String>, String> {
     let body = serde_json::json!({
         "model": LLM_MODEL_FAST,
@@ -261,7 +264,7 @@ async fn call_llm_json(
         "enable_thinking": false,
     });
 
-    let resp = super::llm_post_with_retry(client, LLM_API_URL, &get_llm_api_key(), &body).await?;
+    let resp = super::llm_post_with_retry(client, LLM_API_URL, api_key, &body).await?;
 
     let resp_json: serde_json::Value = resp
         .json()
@@ -276,8 +279,10 @@ async fn call_llm_json(
 /// Backfill canonical_name for ALL existing TestItems.
 /// Groups items by report_type for LLM context.
 pub async fn backfill_canonical_names(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     let db = state.db.clone();
 
     // Phase 1: Scan ALL test items and group their names by report_type
@@ -311,7 +316,7 @@ pub async fn backfill_canonical_names(
     );
 
     // Phase 2: Normalize (backfill has no "existing" canonical names — it IS the source of truth)
-    let name_map = normalize_item_names(&state.http_client, &items_by_report_type, &[]).await;
+    let name_map = normalize_item_names(&state.http_client, &items_by_report_type, &[], &api_key).await;
 
     if name_map.is_empty() {
         return Err(AppError::Internal(

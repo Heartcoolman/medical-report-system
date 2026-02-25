@@ -6,6 +6,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::audit;
 use crate::error::{run_blocking, AppError};
 use crate::models::{ApiResponse, PaginatedList, Patient, PatientReq, PatientWithStats};
 use crate::AppState;
@@ -32,6 +33,17 @@ pub async fn create_patient(
     let db = state.db.clone();
     let p = patient.clone();
     run_blocking(move || db.create_patient(&p)).await?;
+
+    let db = state.db.clone();
+    let pid = patient.id.clone();
+    let pname = patient.name.clone();
+    let _ = run_blocking(move || {
+        audit::log_audit(
+            &db, "create", "patient", Some(&pid), None,
+            Some(&format!("创建患者: {}", pname)),
+        )
+    }).await;
+
     Ok(Json(ApiResponse::ok(patient, "创建成功")))
 }
 
@@ -109,6 +121,17 @@ pub async fn update_patient(
             let db = state.db.clone();
             let p = patient.clone();
             run_blocking(move || db.update_patient(&p)).await?;
+
+            let db = state.db.clone();
+            let pid = patient.id.clone();
+            let pname = patient.name.clone();
+            let _ = run_blocking(move || {
+                audit::log_audit(
+                    &db, "update", "patient", Some(&pid), None,
+                    Some(&format!("更新患者: {}", pname)),
+                )
+            }).await;
+
             Ok(Json(ApiResponse::ok(patient, "更新成功")))
         }
         None => Err(AppError::NotFound("患者不存在".to_string())),
@@ -120,6 +143,16 @@ pub async fn delete_patient(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let db = state.db.clone();
-    run_blocking(move || db.delete_patient(&id)).await?;
+    let id_clone = id.clone();
+    run_blocking(move || db.delete_patient(&id_clone)).await?;
+
+    let db = state.db.clone();
+    let _ = run_blocking(move || {
+        audit::log_audit(
+            &db, "delete", "patient", Some(&id), None,
+            Some("删除患者"),
+        )
+    }).await;
+
     Ok(Json(ApiResponse::ok_msg("删除成功")))
 }

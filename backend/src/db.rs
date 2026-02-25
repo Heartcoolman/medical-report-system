@@ -1,3 +1,4 @@
+use crate::crypto;
 use crate::error::AppError;
 use crate::models::{
     DailyExpense, DailyExpenseDetail, DailyExpenseSummary, EditLog, ExpenseCategory, ExpenseItem, Gender,
@@ -110,6 +111,35 @@ fn parse_category(value: &str) -> ExpenseCategory {
     }
 }
 
+/// Encrypt a patient field if encryption is enabled. Returns plaintext if not.
+fn encrypt_patient_field(value: &str) -> Result<String, AppError> {
+    if crypto::encryption_enabled() {
+        crypto::encrypt_field(value).map_err(|e| AppError::Internal(e))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// Decrypt a patient field. Passes through plaintext if not encrypted.
+fn decrypt_patient_field(value: &str) -> String {
+    crypto::decrypt_field(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// Build a Patient from a row, decrypting sensitive fields.
+fn patient_from_row(row: &rusqlite::Row) -> rusqlite::Result<Patient> {
+    Ok(Patient {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        gender: parse_gender(&row.get::<_, String>(2)?),
+        dob: row.get(3)?,
+        phone: decrypt_patient_field(&row.get::<_, String>(4)?),
+        id_number: decrypt_patient_field(&row.get::<_, String>(5)?),
+        notes: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
 impl Database {
     pub fn new(path: &str) -> Result<Self, AppError> {
         if let Some(parent) = Path::new(path).parent() {
@@ -218,6 +248,33 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_expense_items_expense
                 ON expense_items(expense_id, id);
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'readonly',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                action TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id TEXT,
+                ip_address TEXT,
+                details TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type);
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                user_id TEXT PRIMARY KEY,
+                llm_api_key TEXT,
+                interpret_api_key TEXT,
+                siliconflow_api_key TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             "#,
         )?;
 
@@ -226,7 +283,7 @@ impl Database {
         })
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, AppError>) -> Result<T, AppError> {
+    pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, AppError>) -> Result<T, AppError> {
         let mut conn = self
             .db
             .lock()
@@ -234,9 +291,54 @@ impl Database {
         f(&mut conn)
     }
 
+    /// Migrate unencrypted patient sensitive fields (phone, id_number) to encrypted form.
+    /// Called at startup when DB_ENCRYPTION_KEY is configured.
+    pub fn migrate_encrypt_sensitive_fields(&self) -> Result<usize, AppError> {
+        if !crypto::encryption_enabled() {
+            return Ok(0);
+        }
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, phone, id_number FROM patients"
+            )?;
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            let mut migrated = 0usize;
+            for (id, phone, id_number) in &rows {
+                let phone_needs = !phone.is_empty() && !crypto::is_encrypted(phone);
+                let id_needs = !id_number.is_empty() && !crypto::is_encrypted(id_number);
+                if !phone_needs && !id_needs {
+                    continue;
+                }
+                let enc_phone = if phone_needs {
+                    crypto::encrypt_field(phone).map_err(|e| AppError::Internal(e))?
+                } else {
+                    phone.clone()
+                };
+                let enc_id = if id_needs {
+                    crypto::encrypt_field(id_number).map_err(|e| AppError::Internal(e))?
+                } else {
+                    id_number.clone()
+                };
+                conn.execute(
+                    "UPDATE patients SET phone = ?1, id_number = ?2 WHERE id = ?3",
+                    params![enc_phone, enc_id, id],
+                )?;
+                migrated += 1;
+            }
+            Ok(migrated)
+        })
+    }
+
     // --- Patient CRUD ---
 
     pub fn create_patient(&self, patient: &Patient) -> Result<(), AppError> {
+        let enc_phone = encrypt_patient_field(&patient.phone)?;
+        let enc_id_number = encrypt_patient_field(&patient.id_number)?;
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO patients (id, name, gender, dob, phone, id_number, notes, created_at, updated_at)
@@ -246,8 +348,8 @@ impl Database {
                     patient.name,
                     gender_to_db(&patient.gender),
                     patient.dob,
-                    patient.phone,
-                    patient.id_number,
+                    enc_phone,
+                    enc_id_number,
                     patient.notes,
                     patient.created_at,
                     patient.updated_at
@@ -264,25 +366,15 @@ impl Database {
                 "SELECT id, name, gender, dob, phone, id_number, notes, created_at, updated_at
                  FROM patients WHERE id = ?1",
             )?;
-            stmt.query_row([id], |row| {
-                Ok(Patient {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    gender: parse_gender(&row.get::<_, String>(2)?),
-                    dob: row.get(3)?,
-                    phone: row.get(4)?,
-                    id_number: row.get(5)?,
-                    notes: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })
+            stmt.query_row([id], patient_from_row)
             .optional()
             .map_err(AppError::from)
         })
     }
 
     pub fn update_patient(&self, patient: &Patient) -> Result<(), AppError> {
+        let enc_phone = encrypt_patient_field(&patient.phone)?;
+        let enc_id_number = encrypt_patient_field(&patient.id_number)?;
         self.with_conn(|conn| {
             let affected = conn.execute(
                 "UPDATE patients
@@ -293,8 +385,8 @@ impl Database {
                     patient.name,
                     gender_to_db(&patient.gender),
                     patient.dob,
-                    patient.phone,
-                    patient.id_number,
+                    enc_phone,
+                    enc_id_number,
                     patient.notes,
                     patient.updated_at
                 ],
@@ -327,19 +419,7 @@ impl Database {
                  FROM patients ORDER BY id",
             )?;
             let items = stmt
-                .query_map([], |row| {
-                    Ok(Patient {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        gender: parse_gender(&row.get::<_, String>(2)?),
-                        dob: row.get(3)?,
-                        phone: row.get(4)?,
-                        id_number: row.get(5)?,
-                        notes: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                })?
+                .query_map([], patient_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(items)
         })
@@ -371,19 +451,7 @@ impl Database {
                  FROM patients ORDER BY created_at ASC, id ASC LIMIT ?1 OFFSET ?2",
             )?;
             let items = stmt
-                .query_map(params![page_size as i64, skip as i64], |row| {
-                    Ok(Patient {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        gender: parse_gender(&row.get::<_, String>(2)?),
-                        dob: row.get(3)?,
-                        phone: row.get(4)?,
-                        id_number: row.get(5)?,
-                        notes: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                })?
+                .query_map(params![page_size as i64, skip as i64], patient_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
 
             Ok(PaginatedList {
@@ -406,19 +474,7 @@ impl Database {
                  ORDER BY p.id",
             )?;
             let patients = stmt
-                .query_map([pattern], |row| {
-                    Ok(Patient {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        gender: parse_gender(&row.get::<_, String>(2)?),
-                        dob: row.get(3)?,
-                        phone: row.get(4)?,
-                        id_number: row.get(5)?,
-                        notes: row.get(6)?,
-                        created_at: row.get(7)?,
-                        updated_at: row.get(8)?,
-                    })
-                })?
+                .query_map([pattern], patient_from_row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(patients)
         })

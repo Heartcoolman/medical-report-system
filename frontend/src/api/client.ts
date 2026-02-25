@@ -34,15 +34,35 @@ import type {
   MergeChunksReq,
 } from './types';
 
+const TOKEN_KEY = 'auth_token'
+
 async function request<T>(url: string, options?: RequestInit, timeout = 12000): Promise<T> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeout)
 
+  // Inject Authorization header
+  const token = localStorage.getItem(TOKEN_KEY)
+  const headers = new Headers(options?.headers)
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
   try {
     const res = await fetch(url, {
       ...options,
+      headers,
       signal: controller.signal,
     })
+
+    // Handle 401 — clear token and redirect to login
+    if (res.status === 401) {
+      localStorage.removeItem(TOKEN_KEY)
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+      throw new Error('未授权，请重新登录')
+    }
+
     const rawText = await res.text()
 
     let json: ApiResponse<T>
@@ -87,7 +107,39 @@ function qs(params: Record<string, string | number | undefined>): string {
   return '?' + new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString();
 }
 
+export interface AuthResponse {
+  token: string
+  user: { id: string; username: string; role: string }
+}
+
+export interface UserSettings {
+  llm_api_key: string
+  interpret_api_key: string
+  siliconflow_api_key: string
+}
+
 export const api = {
+  auth: {
+    login(username: string, password: string) {
+      return request<AuthResponse>('/api/auth/login', jsonRequest('POST', { username, password }));
+    },
+    register(username: string, password: string) {
+      return request<AuthResponse>('/api/auth/register', jsonRequest('POST', { username, password }));
+    },
+    me() {
+      return request<{ id: string; username: string; role: string }>('/api/auth/me');
+    },
+  },
+
+  user: {
+    getSettings() {
+      return request<UserSettings>('/api/user/settings');
+    },
+    updateSettings(data: Partial<UserSettings>) {
+      return request<UserSettings>('/api/user/settings', jsonRequest('PUT', data));
+    },
+  },
+
   patients: {
     list(params?: { search?: string; page?: number; page_size?: number }) {
       return request<PaginatedList<PatientWithStats>>(`/api/patients${qs(params ?? {})}`);

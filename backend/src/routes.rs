@@ -1,47 +1,50 @@
 use axum::{
     extract::DefaultBodyLimit,
+    middleware as axum_mw,
     routing::{get, post},
     Json, Router,
 };
 
+use crate::auth::{self, Role};
 use crate::handlers;
+use crate::middleware::MAX_UPLOAD_SIZE;
 use crate::AppState;
-
-const MAX_UPLOAD_SIZE: usize = 50 * 1024 * 1024;
 
 pub fn build_router() -> Router<AppState> {
     Router::new()
         .route("/api/health", get(|| async { Json(serde_json::json!({ "status": "ok" })) }))
-        .merge(patient_routes())
-        .merge(report_routes())
-        .merge(test_item_routes())
-        .merge(edit_log_routes())
-        .merge(ocr_routes())
-        .merge(temperature_routes())
-        .merge(interpret_routes())
-        .merge(expense_routes())
+        // Public auth routes (no JWT required)
+        .merge(auth_routes())
+        // ReadOnly+ : all authenticated users can read
+        .merge(readonly_routes())
+        // Nurse+ : temperature write, expense read
+        .merge(nurse_routes())
+        // Doctor+ : patient write, report management, OCR, interpret
+        .merge(doctor_routes())
+        // Admin only
         .merge(admin_routes())
+        // JWT auth middleware applied to all /api/ routes except /api/auth/* and /api/health
+        .layer(axum_mw::from_fn(auth::jwt_auth_middleware))
 }
 
-fn patient_routes() -> Router<AppState> {
+fn auth_routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/patients",
-            get(handlers::patients::list_patients).post(handlers::patients::create_patient),
-        )
-        .route(
-            "/api/patients/:id",
-            get(handlers::patients::get_patient)
-                .put(handlers::patients::update_patient)
-                .delete(handlers::patients::delete_patient),
-        )
+        .route("/api/auth/register", post(auth::register))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/me", get(auth::get_me))
 }
 
-fn report_routes() -> Router<AppState> {
+/// Routes accessible by all authenticated users (ReadOnly and above).
+/// GET-only endpoints for reading data.
+fn readonly_routes() -> Router<AppState> {
     Router::new()
+        // Patient list & detail (read)
+        .route("/api/patients", get(handlers::patients::list_patients))
+        .route("/api/patients/:id", get(handlers::patients::get_patient))
+        // Report list & detail (read)
         .route(
             "/api/patients/:patient_id/reports",
-            get(handlers::reports::list_reports_by_patient).post(handlers::reports::create_report),
+            get(handlers::reports::list_reports_by_patient),
         )
         .route(
             "/api/patients/:patient_id/trends",
@@ -53,32 +56,17 @@ fn report_routes() -> Router<AppState> {
         )
         .route(
             "/api/reports/:report_id",
-            get(handlers::reports::get_report_detail)
-                .put(handlers::reports::update_report)
-                .delete(handlers::reports::delete_report_handler),
+            get(handlers::reports::get_report_detail),
         )
         .route(
             "/api/reports/:report_id/interpret-cache",
             get(handlers::reports::get_cached_interpretation),
         )
-}
-
-fn test_item_routes() -> Router<AppState> {
-    Router::new()
         .route(
             "/api/reports/:report_id/test-items",
             get(handlers::reports::get_test_items_by_report),
         )
-        .route("/api/test-items", post(handlers::reports::create_test_item))
-        .route(
-            "/api/test-items/:id",
-            axum::routing::put(handlers::reports::update_test_item)
-                .delete(handlers::reports::delete_test_item_handler),
-        )
-}
-
-fn edit_log_routes() -> Router<AppState> {
-    Router::new()
+        // Edit logs (read)
         .route(
             "/api/edit-logs",
             get(handlers::reports::list_edit_logs_global),
@@ -87,10 +75,72 @@ fn edit_log_routes() -> Router<AppState> {
             "/api/reports/:report_id/edit-logs",
             get(handlers::reports::list_edit_logs_by_report),
         )
+        // Temperature (read)
+        .route(
+            "/api/patients/:patient_id/temperatures",
+            get(handlers::temperatures::list_temperatures),
+        )
+        // Expense (read)
+        .route(
+            "/api/patients/:patient_id/expenses",
+            get(handlers::expense::list_expenses),
+        )
+        .route(
+            "/api/expenses/:id",
+            get(handlers::expense::get_expense),
+        )
+        // User settings (API keys)
+        .route(
+            "/api/user/settings",
+            get(handlers::user_settings::get_settings)
+                .put(handlers::user_settings::update_settings),
+        )
 }
 
-fn ocr_routes() -> Router<AppState> {
+/// Routes accessible by Nurse and above.
+/// Temperature recording, expense viewing.
+fn nurse_routes() -> Router<AppState> {
     Router::new()
+        .route(
+            "/api/patients/:patient_id/temperatures",
+            post(handlers::temperatures::create_temperature),
+        )
+        .route(
+            "/api/temperatures/:id",
+            axum::routing::delete(handlers::temperatures::delete_temperature),
+        )
+        .layer(axum_mw::from_fn(auth::require_role(Role::Nurse)))
+}
+
+/// Routes accessible by Doctor and above.
+/// Patient CRUD, report management, OCR, AI interpret, expense management.
+fn doctor_routes() -> Router<AppState> {
+    Router::new()
+        // Patient write
+        .route("/api/patients", post(handlers::patients::create_patient))
+        .route(
+            "/api/patients/:id",
+            axum::routing::put(handlers::patients::update_patient)
+                .delete(handlers::patients::delete_patient),
+        )
+        // Report write
+        .route(
+            "/api/patients/:patient_id/reports",
+            post(handlers::reports::create_report),
+        )
+        .route(
+            "/api/reports/:report_id",
+            axum::routing::put(handlers::reports::update_report)
+                .delete(handlers::reports::delete_report_handler),
+        )
+        // Test items write
+        .route("/api/test-items", post(handlers::reports::create_test_item))
+        .route(
+            "/api/test-items/:id",
+            axum::routing::put(handlers::reports::update_test_item)
+                .delete(handlers::reports::delete_test_item_handler),
+        )
+        // OCR
         .route(
             "/api/upload",
             post(handlers::ocr::upload_file).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE)),
@@ -115,23 +165,7 @@ fn ocr_routes() -> Router<AppState> {
             "/api/patients/:patient_id/reports/confirm",
             post(handlers::ocr::batch_confirm),
         )
-}
-
-fn temperature_routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/patients/:patient_id/temperatures",
-            get(handlers::temperatures::list_temperatures)
-                .post(handlers::temperatures::create_temperature),
-        )
-        .route(
-            "/api/temperatures/:id",
-            axum::routing::delete(handlers::temperatures::delete_temperature),
-        )
-}
-
-fn interpret_routes() -> Router<AppState> {
-    Router::new()
+        // AI Interpret
         .route(
             "/api/reports/:report_id/interpret",
             get(handlers::interpret::interpret_single_report),
@@ -152,10 +186,7 @@ fn interpret_routes() -> Router<AppState> {
             "/api/patients/:patient_id/trends/:item_name/interpret-time",
             get(handlers::interpret::interpret_trend_time),
         )
-}
-
-fn expense_routes() -> Router<AppState> {
-    Router::new()
+        // Expense write
         .route(
             "/api/patients/:patient_id/expenses/parse",
             post(handlers::expense::parse_expense).layer(DefaultBodyLimit::max(MAX_UPLOAD_SIZE)),
@@ -167,10 +198,6 @@ fn expense_routes() -> Router<AppState> {
         .route(
             "/api/patients/:patient_id/expenses/batch-confirm",
             post(handlers::expense::batch_confirm_expense),
-        )
-        .route(
-            "/api/patients/:patient_id/expenses",
-            get(handlers::expense::list_expenses),
         )
         .route(
             "/api/expenses/parse-chunk",
@@ -186,14 +213,21 @@ fn expense_routes() -> Router<AppState> {
         )
         .route(
             "/api/expenses/:id",
-            get(handlers::expense::get_expense)
-                .delete(handlers::expense::delete_expense),
+            axum::routing::delete(handlers::expense::delete_expense),
         )
+        .layer(axum_mw::from_fn(auth::require_role(Role::Doctor)))
 }
 
+/// Admin-only routes.
 fn admin_routes() -> Router<AppState> {
-    Router::new().route(
-        "/api/admin/backfill-canonical-names",
-        post(handlers::normalize::backfill_canonical_names),
-    )
+    Router::new()
+        .route(
+            "/api/admin/backfill-canonical-names",
+            post(handlers::normalize::backfill_canonical_names),
+        )
+        .route(
+            "/api/admin/audit-logs",
+            get(handlers::audit_handler::list_audit_logs),
+        )
+        .layer(axum_mw::from_fn(auth::require_role(Role::Admin)))
 }

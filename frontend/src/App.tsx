@@ -1,9 +1,10 @@
-import { lazy, Suspense } from 'solid-js'
+import { lazy, Suspense, Show, type ParentProps } from 'solid-js'
 import { ToastProvider, Spinner } from './components'
-import { Router, Route, A } from '@solidjs/router'
+import { Router, Route, A, Navigate } from '@solidjs/router'
 import AppLayout from './layouts/AppLayout'
 import ReloadPrompt from './components/ReloadPrompt'
 import PWAInstallPrompt from './components/PWAInstallPrompt'
+import { isAuthenticated, initAuth, authReady } from './stores/auth'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const PatientCreate = lazy(() => import('./pages/PatientCreate'))
@@ -13,6 +14,48 @@ const ReportDetail = lazy(() => import('./pages/ReportDetail'))
 const TrendAnalysis = lazy(() => import('./pages/TrendAnalysis'))
 const EditLogs = lazy(() => import('./pages/EditLogs'))
 const ExpenseDetail = lazy(() => import('./pages/ExpenseDetail'))
+const Login = lazy(() => import('./pages/Login'))
+const Register = lazy(() => import('./pages/Register'))
+const Settings = lazy(() => import('./pages/Settings'))
+
+// Initialize auth on app load
+initAuth()
+
+function AuthGuard(props: ParentProps) {
+  return (
+    <Show
+      when={authReady()}
+      fallback={
+        <div class="flex flex-col items-center justify-center py-20 gap-3">
+          <Spinner size="xl" variant="orbital" />
+          <span class="text-sm text-content-secondary">加载中...</span>
+        </div>
+      }
+    >
+      <Show when={isAuthenticated()} fallback={<Navigate href="/login" />}>
+        {props.children}
+      </Show>
+    </Show>
+  )
+}
+
+function GuestOnly(props: ParentProps) {
+  return (
+    <Show
+      when={authReady()}
+      fallback={
+        <div class="flex flex-col items-center justify-center py-20 gap-3">
+          <Spinner size="xl" variant="orbital" />
+          <span class="text-sm text-content-secondary">加载中...</span>
+        </div>
+      }
+    >
+      <Show when={!isAuthenticated()} fallback={<Navigate href="/" />}>
+        {props.children}
+      </Show>
+    </Show>
+  )
+}
 
 function NotFound() {
   return (
@@ -24,20 +67,36 @@ function NotFound() {
   )
 }
 
+function AuthPageShell(props: ParentProps) {
+  return <>{props.children}</>
+}
+
 function App() {
   return (
     <ToastProvider>
-      <Router root={AppLayout}>
+      <Router>
         <Suspense fallback={<div class="flex flex-col items-center justify-center py-20 gap-3"><Spinner size="xl" variant="orbital" /><span class="text-sm text-content-secondary">加载中...</span></div>}>
-          <Route path="/" component={Dashboard} />
-          <Route path="/patients/new" component={PatientCreate} />
-          <Route path="/patients/:id" component={PatientDetail} />
-          <Route path="/patients/:id/edit" component={PatientEdit} />
-          <Route path="/patients/:id/trends" component={TrendAnalysis} />
-          <Route path="/reports/:id" component={ReportDetail} />
-          <Route path="/expenses/:id" component={ExpenseDetail} />
-          <Route path="/edit-logs" component={EditLogs} />
-          <Route path="*" component={NotFound} />
+          {/* Guest-only routes (no AppLayout) */}
+          <Route path="/login" component={AuthPageShell}>
+            <Route path="/" component={() => <GuestOnly><Login /></GuestOnly>} />
+          </Route>
+          <Route path="/register" component={AuthPageShell}>
+            <Route path="/" component={() => <GuestOnly><Register /></GuestOnly>} />
+          </Route>
+
+          {/* Protected routes (with AppLayout) */}
+          <Route path="/" component={(p) => <AuthGuard><AppLayout {...p} /></AuthGuard>}>
+            <Route path="/" component={Dashboard} />
+            <Route path="/patients/new" component={PatientCreate} />
+            <Route path="/patients/:id" component={PatientDetail} />
+            <Route path="/patients/:id/edit" component={PatientEdit} />
+            <Route path="/patients/:id/trends" component={TrendAnalysis} />
+            <Route path="/reports/:id" component={ReportDetail} />
+            <Route path="/expenses/:id" component={ExpenseDetail} />
+            <Route path="/edit-logs" component={EditLogs} />
+            <Route path="/settings" component={Settings} />
+            <Route path="*" component={NotFound} />
+          </Route>
         </Suspense>
       </Router>
       <ReloadPrompt />

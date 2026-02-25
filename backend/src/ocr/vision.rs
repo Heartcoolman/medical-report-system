@@ -74,10 +74,6 @@ struct ApiError {
     message: String,
 }
 
-fn get_api_key() -> String {
-    std::env::var("SILICONFLOW_API_KEY").expect("环境变量 SILICONFLOW_API_KEY 未设置")
-}
-
 /// Detect MIME type from file extension
 fn detect_mime(file_path: &str) -> &'static str {
     let lower = file_path.to_lowercase();
@@ -96,8 +92,8 @@ fn detect_mime(file_path: &str) -> &'static str {
 pub async fn recognize_file_with_client(
     file_path: &str,
     client: &Client,
+    api_key: &str,
 ) -> Result<ParsedReport, String> {
-    let api_key = get_api_key();
 
     // Check file size before reading to avoid OOM with huge files
     const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB

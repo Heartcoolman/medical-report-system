@@ -531,10 +531,28 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
                 .file_name()
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| format!("{}.bin", Uuid::new_v4()));
+
+            // Validate file extension
+            crate::middleware::validate_file_extension(&fname)
+                .map_err(AppError::BadRequest)?;
+
             let data = field
                 .bytes()
                 .await
                 .map_err(|e| AppError::BadRequest(format!("读取上传数据失败: {}", e)))?;
+
+            // Validate file size
+            if data.len() > crate::middleware::MAX_UPLOAD_SIZE {
+                return Err(AppError::BadRequest(format!(
+                    "文件大小超过限制 {}MB",
+                    crate::middleware::MAX_UPLOAD_SIZE / 1024 / 1024
+                )));
+            }
+
+            // Validate file type via magic bytes
+            crate::middleware::validate_file_magic_bytes(&data)
+                .map_err(AppError::BadRequest)?;
+
             Ok((data.to_vec(), fname))
         }
         Ok(None) => Err(AppError::BadRequest("未找到上传文件".to_string())),
@@ -576,9 +594,11 @@ fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_width: u32) -> 
 
 /// Parse expense list screenshot using vision model + LLM analysis
 pub async fn parse_expense(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
+    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -599,7 +619,7 @@ pub async fn parse_expense(
     tracing::info!("开始识别消费清单: {} ({} bytes)", file_name, orig_size);
 
     // Step 1: Vision model to extract expense items (may contain multiple days)
-    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client).await.map_err(|e| {
+    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
         tracing::warn!("消费清单识别失败: {}", e);
         AppError::Internal(format!("消费清单识别失败: {}", e))
     })?;
@@ -804,9 +824,8 @@ async fn recognize_expense_bytes(
     raw_bytes: &[u8],
     file_name: &str,
     client: &reqwest::Client,
+    api_key: &str,
 ) -> Result<Vec<ParsedExpenseDay>, String> {
-    let api_key = std::env::var("SILICONFLOW_API_KEY")
-        .map_err(|_| "环境变量 SILICONFLOW_API_KEY 未设置".to_string())?;
 
     const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
     if raw_bytes.len() > MAX_FILE_SIZE {
@@ -941,6 +960,7 @@ pub struct AnalyzeExpenseResp {
 
 /// Analyze a single day's expense items using LLM
 pub async fn analyze_expense_day(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     Json(req): Json<AnalyzeExpenseReq>,
 ) -> Result<Json<ApiResponse<AnalyzeExpenseResp>>, AppError> {
@@ -954,9 +974,10 @@ pub async fn analyze_expense_day(
         )));
     }
 
+    let llm_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     let client = state.http_client.clone();
     let (drug_analysis, treatment_analysis) =
-        analyze_treatment(&client, &req.items).await.unwrap_or_else(|e| {
+        analyze_treatment(&client, &req.items, &llm_key).await.unwrap_or_else(|e| {
             tracing::warn!("治疗方案分析失败: {}", e);
             (String::new(), String::new())
         });
@@ -975,9 +996,9 @@ pub async fn analyze_expense_day(
 async fn analyze_treatment(
     client: &reqwest::Client,
     items: &[ParsedExpenseItem],
+    api_key: &str,
 ) -> Result<(String, String), String> {
     let prompt = build_analysis_prompt(items);
-    let api_key = super::get_llm_api_key();
 
     let body = serde_json::json!({
         "model": super::LLM_MODEL_FAST,
@@ -1022,9 +1043,11 @@ const CHUNK_VISION_PROMPT: &str = r#"从住院消费清单截图的一个局部�
 
 /// Parse a single image chunk (strip) from a split expense list
 pub async fn parse_chunk(
+    auth: crate::auth::AuthUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<Vec<ParsedExpenseDay>>>, AppError> {
+    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -1042,7 +1065,7 @@ pub async fn parse_chunk(
 
     tracing::info!("开始识别消费清单条带: {} ({} bytes)", file_name, raw_bytes.len());
 
-    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client).await.map_err(|e| {
+    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
         tracing::warn!("条带识别失败: {}", e);
         AppError::Internal(format!("条带识别失败: {}", e))
     })?;
@@ -1058,9 +1081,8 @@ async fn recognize_chunk_bytes(
     raw_bytes: &[u8],
     file_name: &str,
     client: &reqwest::Client,
+    api_key: &str,
 ) -> Result<Vec<ParsedExpenseDay>, String> {
-    let api_key = std::env::var("SILICONFLOW_API_KEY")
-        .map_err(|_| "环境变量 SILICONFLOW_API_KEY 未设置".to_string())?;
 
     // Compress image to WebP in blocking thread
     let raw_owned = raw_bytes.to_vec();
