@@ -1,6 +1,6 @@
-import { lazy, Suspense, Show, type ParentProps } from 'solid-js'
+import { lazy, Suspense, Show, createEffect, type ParentProps } from 'solid-js'
 import { ToastProvider, Spinner } from './components'
-import { Router, Route, A, Navigate } from '@solidjs/router'
+import { Router, Route, A, useNavigate } from '@solidjs/router'
 import AppLayout from './layouts/AppLayout'
 import ReloadPrompt from './components/ReloadPrompt'
 import PWAInstallPrompt from './components/PWAInstallPrompt'
@@ -22,9 +22,13 @@ const Settings = lazy(() => import('./pages/Settings'))
 initAuth()
 
 function AuthGuard(props: ParentProps) {
+  const navigate = useNavigate()
+  createEffect(() => {
+    if (authReady() && !isAuthenticated()) navigate('/login', { replace: true })
+  })
   return (
     <Show
-      when={authReady()}
+      when={authReady() && isAuthenticated()}
       fallback={
         <div class="flex flex-col items-center justify-center py-20 gap-3">
           <Spinner size="xl" variant="orbital" />
@@ -32,17 +36,19 @@ function AuthGuard(props: ParentProps) {
         </div>
       }
     >
-      <Show when={isAuthenticated()} fallback={<Navigate href="/login" />}>
-        {props.children}
-      </Show>
+      {props.children}
     </Show>
   )
 }
 
 function GuestOnly(props: ParentProps) {
+  const navigate = useNavigate()
+  createEffect(() => {
+    if (authReady() && isAuthenticated()) navigate('/', { replace: true })
+  })
   return (
     <Show
-      when={authReady()}
+      when={authReady() && !isAuthenticated()}
       fallback={
         <div class="flex flex-col items-center justify-center py-20 gap-3">
           <Spinner size="xl" variant="orbital" />
@@ -50,9 +56,7 @@ function GuestOnly(props: ParentProps) {
         </div>
       }
     >
-      <Show when={!isAuthenticated()} fallback={<Navigate href="/" />}>
-        {props.children}
-      </Show>
+      {props.children}
     </Show>
   )
 }
