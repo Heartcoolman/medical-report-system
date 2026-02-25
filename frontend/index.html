@@ -13,13 +13,12 @@
     <meta name="apple-mobile-web-app-title" content="医疗管理" />
   </head>
   <body>
-    <div id="root">
-      <div id="app-loading" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#f8fafc;font-family:system-ui,sans-serif">
-        <div style="width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#3482FF;border-radius:50%;animation:spin .8s linear infinite"></div>
-        <p style="margin-top:16px;color:#64748b;font-size:14px">加载中...</p>
-      </div>
-      <style>@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-color-scheme:dark){#app-loading{background:#0f172a}#app-loading p{color:#94a3b8}#app-loading div:first-child{border-color:#334155;border-top-color:#3482FF}}</style>
+    <div id="app-loading" style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f8fafc;font-family:system-ui,sans-serif">
+      <div style="width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#3482FF;border-radius:50%;animation:spin .8s linear infinite"></div>
+      <p style="margin-top:16px;color:#64748b;font-size:14px">加载中...</p>
     </div>
+    <style>@keyframes spin{to{transform:rotate(360deg)}}@media(prefers-color-scheme:dark){#app-loading{background:#0f172a}#app-loading p{color:#94a3b8}#app-loading div:first-child{border-color:#334155;border-top-color:#3482FF}}</style>
+    <div id="root"></div>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>
