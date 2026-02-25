@@ -195,7 +195,12 @@ async fn call_api(
         });
         if let Some(val) = parsed {
             if !item.reference_range.is_empty() {
-                item.status = super::parser::determine_status(val, &item.reference_range).to_string();
+                // Sanity check: if value is wildly outside reference range (>5x),
+                // the LLM likely mixed up rows — keep its original status instead
+                let range_plausible = super::parser::value_in_plausible_range(val, &item.reference_range);
+                if range_plausible {
+                    item.status = super::parser::determine_status(val, &item.reference_range).to_string();
+                }
             }
         }
     }

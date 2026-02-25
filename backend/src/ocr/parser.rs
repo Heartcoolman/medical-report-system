@@ -243,6 +243,31 @@ pub fn determine_status(value: f64, range: &str) -> ItemStatus {
     ItemStatus::Normal
 }
 
+/// Check if a value is within a plausible distance of the reference range.
+/// Returns false if the value is wildly outside (>5x), suggesting the LLM mixed up rows.
+pub fn value_in_plausible_range(value: f64, range: &str) -> bool {
+    let range = range.trim();
+    const FACTOR: f64 = 5.0;
+
+    if let Some(caps) = RE_UPPER_BOUND.captures(range) {
+        if let Ok(bound) = caps[2].parse::<f64>() {
+            return bound == 0.0 || value <= bound * FACTOR;
+        }
+    }
+    if let Some(caps) = RE_LOWER_BOUND.captures(range) {
+        if let Ok(bound) = caps[2].parse::<f64>() {
+            return bound == 0.0 || value >= bound / FACTOR;
+        }
+    }
+    if let Some(caps) = RE_RANGE.captures(range) {
+        if let (Ok(low), Ok(high)) = (caps[1].parse::<f64>(), caps[2].parse::<f64>()) {
+            let span = (high - low).abs().max(1.0);
+            return value >= low - span * FACTOR && value <= high + span * FACTOR;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
