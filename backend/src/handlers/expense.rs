@@ -4,17 +4,19 @@ use axum::{
 };
 use base64::Engine;
 use chrono::Utc;
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use std::collections::HashSet;
 use std::io::Cursor;
+use uuid::Uuid;
 
-use serde::de;
 use crate::error::AppError;
 use crate::models::{
     ApiResponse, BatchConfirmExpenseReq, ConfirmExpenseReq, DailyExpense, DailyExpenseDetail,
     DailyExpenseSummary, ExpenseItem,
 };
 use crate::AppState;
+use serde::de;
 
 // --- Vision prompt for expense list parsing ---
 
@@ -29,6 +31,17 @@ const EXPENSE_VISION_PROMPT: &str = r#"从住院消费清单截图中提取项�
 // --- Drug/treatment analysis prompt ---
 
 const ANALYSIS_SYSTEM_PROMPT: &str = r#"你是一位资深临床药师和医学专家。根据患者当日的住院消费清单，分析医生的用药方案和治疗思路。请用简明扼要的中文回答。"#;
+
+const CHUNK_TRIGGER_MIN_HEIGHT: u32 = 4200;
+const CHUNK_TRIGGER_MIN_RATIO: f32 = 2.6;
+const CHUNK_TARGET_COUNT: u32 = 6;
+const CHUNK_MIN_HEIGHT: u32 = 1600;
+const CHUNK_MAX_HEIGHT: u32 = 2600;
+const CHUNK_OVERLAP: u32 = 280;
+const CHUNK_MAX_COUNT: usize = 8;
+const CHUNK_MAX_CONCURRENCY: usize = 3;
+const BOUNDARY_DEDUP_WINDOW: usize = 18;
+const BOUNDARY_HEAD_SCAN: usize = 26;
 
 fn build_analysis_prompt(items: &[ParsedExpenseItem]) -> String {
     let mut drug_list = Vec::new();
@@ -95,9 +108,15 @@ where
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a number or numeric string")
         }
-        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> { Ok(v) }
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> { Ok(v as f64) }
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> { Ok(v as f64) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> {
+            Ok(v)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
         fn visit_str<E: de::Error>(self, v: &str) -> Result<f64, E> {
             v.trim().parse::<f64>().map_err(de::Error::custom)
         }
@@ -118,7 +137,12 @@ where
 struct CompactDay {
     #[serde(alias = "d", alias = "expense_date", default)]
     d: String,
-    #[serde(alias = "t", alias = "total_amount", default, deserialize_with = "flexible_f64_default")]
+    #[serde(
+        alias = "t",
+        alias = "total_amount",
+        default,
+        deserialize_with = "flexible_f64_default"
+    )]
     t: f64,
     #[serde(default)]
     items: Vec<CompactItem>,
@@ -130,7 +154,12 @@ struct CompactItem {
     n: String,
     #[serde(alias = "q", alias = "quantity", default)]
     q: String,
-    #[serde(alias = "a", alias = "amount", default, deserialize_with = "flexible_f64_default")]
+    #[serde(
+        alias = "a",
+        alias = "amount",
+        default,
+        deserialize_with = "flexible_f64_default"
+    )]
     a: f64,
     #[serde(alias = "category", default)]
     category: String,
@@ -162,50 +191,374 @@ pub struct ParsedExpenseItem {
     pub note: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ItemSignature {
+    name: String,
+    quantity: String,
+    amount_cents: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SourcedExpenseItem {
+    item: ParsedExpenseItem,
+    chunk_index: usize,
+}
+
+#[derive(Debug, Default)]
+struct DayMergeState {
+    items: Vec<SourcedExpenseItem>,
+}
+
+#[derive(Debug)]
+struct ChunkMergeSummary {
+    days: Vec<ParsedExpenseDay>,
+    raw_item_count: usize,
+    removed_boundary_duplicates: usize,
+}
+
+fn round_currency(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn should_use_chunk_strategy(file_name: &str, width: u32, height: u32) -> bool {
+    let lower = file_name.to_lowercase();
+    if lower.ends_with(".pdf") || width == 0 || height == 0 {
+        return false;
+    }
+
+    let ratio = height as f32 / width as f32;
+    (height >= CHUNK_TRIGGER_MIN_HEIGHT && ratio >= CHUNK_TRIGGER_MIN_RATIO) || height >= 12000
+}
+
+fn split_image_vertical_chunks(raw_bytes: &[u8], file_name: &str) -> Result<Vec<Vec<u8>>, String> {
+    let image = image::load_from_memory(raw_bytes).map_err(|e| format!("解析图片失败: {}", e))?;
+    let (width, height) = (image.width(), image.height());
+
+    if !should_use_chunk_strategy(file_name, width, height) {
+        return Ok(Vec::new());
+    }
+
+    let mut chunk_height = ((height + CHUNK_TARGET_COUNT - 1) / CHUNK_TARGET_COUNT)
+        .clamp(CHUNK_MIN_HEIGHT, CHUNK_MAX_HEIGHT);
+    if chunk_height <= CHUNK_OVERLAP + 1 {
+        chunk_height = CHUNK_OVERLAP + 1;
+    }
+    let step = chunk_height - CHUNK_OVERLAP;
+
+    let mut chunks = Vec::new();
+    let mut y = 0u32;
+
+    while y < height {
+        let remaining = height - y;
+        let current_height = remaining.min(chunk_height);
+        let strip = image.crop_imm(0, y, width, current_height);
+        let mut buf = Cursor::new(Vec::new());
+        strip
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .map_err(|e| format!("条带编码失败: {}", e))?;
+        chunks.push(buf.into_inner());
+
+        if y + current_height >= height {
+            break;
+        }
+
+        if chunks.len() + 1 >= CHUNK_MAX_COUNT {
+            let final_start = height.saturating_sub(chunk_height);
+            if final_start <= y {
+                break;
+            }
+            y = final_start;
+        } else {
+            y = y.saturating_add(step);
+        }
+    }
+
+    tracing::info!(
+        "超长清单分块: {}x{} -> {} 块 (块高约{}, 重叠{})",
+        width,
+        height,
+        chunks.len(),
+        chunk_height,
+        CHUNK_OVERLAP
+    );
+
+    Ok(chunks)
+}
+
+fn normalize_signature_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect::<String>()
+}
+
+fn normalize_signature_quantity(quantity: &str) -> String {
+    normalize_signature_text(
+        &quantity
+            .replace('×', "x")
+            .replace('＊', "x")
+            .replace('*', "x"),
+    )
+}
+
+fn amount_to_cents(amount: f64) -> i64 {
+    (amount * 100.0).round() as i64
+}
+
+fn item_signature(item: &ParsedExpenseItem) -> ItemSignature {
+    ItemSignature {
+        name: normalize_signature_text(&item.name),
+        quantity: normalize_signature_quantity(&item.quantity),
+        amount_cents: amount_to_cents(item.amount),
+    }
+}
+
+fn normalize_items_for_merge(items: Vec<ParsedExpenseItem>) -> Vec<ParsedExpenseItem> {
+    items
+        .into_iter()
+        .filter_map(|mut item| {
+            let name = item.name.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            item.name = name;
+            item.quantity = item.quantity.trim().to_string();
+            item.category = if item.category.trim().is_empty() {
+                classify_category(&item.name).to_string()
+            } else {
+                item.category.trim().to_string()
+            };
+            Some(item)
+        })
+        .collect()
+}
+
+fn dedup_chunk_boundary_items(
+    existing: &[SourcedExpenseItem],
+    incoming: Vec<ParsedExpenseItem>,
+    chunk_index: usize,
+) -> (Vec<ParsedExpenseItem>, usize) {
+    if incoming.is_empty() || chunk_index == 0 {
+        return (incoming, 0);
+    }
+
+    let previous_chunk = chunk_index - 1;
+    let mut tail_signatures: HashSet<ItemSignature> = HashSet::new();
+    for sourced in existing
+        .iter()
+        .rev()
+        .filter(|item| item.chunk_index == previous_chunk)
+        .take(BOUNDARY_DEDUP_WINDOW)
+    {
+        tail_signatures.insert(item_signature(&sourced.item));
+    }
+
+    if tail_signatures.is_empty() {
+        return (incoming, 0);
+    }
+
+    let mut filtered = Vec::with_capacity(incoming.len());
+    let mut removed = 0usize;
+    for (idx, item) in incoming.into_iter().enumerate() {
+        if idx < BOUNDARY_HEAD_SCAN && tail_signatures.contains(&item_signature(&item)) {
+            removed += 1;
+            continue;
+        }
+        filtered.push(item);
+    }
+
+    (filtered, removed)
+}
+
+fn merge_chunk_results_boundary_safe(mut chunks: Vec<ChunkResult>) -> ChunkMergeSummary {
+    chunks.sort_by_key(|c| c.chunk_index);
+
+    let mut current_date = String::new();
+    let mut day_map: indexmap::IndexMap<String, DayMergeState> = indexmap::IndexMap::new();
+    let mut raw_item_count = 0usize;
+    let mut removed_boundary_duplicates = 0usize;
+
+    for chunk in chunks {
+        for mut day in chunk.days {
+            let date = day.expense_date.trim();
+            if !date.is_empty() {
+                current_date = date.to_string();
+            }
+
+            let date_key = if current_date.is_empty() {
+                "未知日期".to_string()
+            } else {
+                current_date.clone()
+            };
+
+            let normalized_items = normalize_items_for_merge(std::mem::take(&mut day.items));
+            raw_item_count += normalized_items.len();
+
+            let state = day_map.entry(date_key).or_default();
+            let (deduped, removed) =
+                dedup_chunk_boundary_items(&state.items, normalized_items, chunk.chunk_index);
+            removed_boundary_duplicates += removed;
+
+            for item in deduped {
+                state.items.push(SourcedExpenseItem {
+                    item,
+                    chunk_index: chunk.chunk_index,
+                });
+            }
+        }
+    }
+
+    let mut date_keys: Vec<String> = day_map.keys().cloned().collect();
+    date_keys.sort();
+
+    let mut merged_days = Vec::with_capacity(date_keys.len());
+    for date in date_keys {
+        if let Some(state) = day_map.remove(&date) {
+            let items: Vec<ParsedExpenseItem> =
+                state.items.into_iter().map(|item| item.item).collect();
+            let total_amount = round_currency(items.iter().map(|item| item.amount).sum::<f64>());
+            let expense_date = if date == "未知日期" {
+                String::new()
+            } else {
+                date
+            };
+            merged_days.push(ParsedExpenseDay {
+                expense_date,
+                total_amount,
+                items,
+            });
+        }
+    }
+
+    ChunkMergeSummary {
+        days: merged_days,
+        raw_item_count,
+        removed_boundary_duplicates,
+    }
+}
+
+fn looks_like_incomplete_chunk_merge(summary: &ChunkMergeSummary, chunk_count: usize) -> bool {
+    let total_items: usize = summary.days.iter().map(|day| day.items.len()).sum();
+    if summary.days.is_empty() || total_items == 0 {
+        return true;
+    }
+
+    if chunk_count >= 4 && total_items < chunk_count * 3 {
+        return true;
+    }
+
+    summary.removed_boundary_duplicates > summary.raw_item_count / 2
+}
+
+fn align_day_totals_with_items(days: &mut [ParsedExpenseDay]) {
+    for day in days {
+        day.total_amount = round_currency(day.items.iter().map(|item| item.amount).sum::<f64>());
+    }
+}
+
 // --- Keyword-based category classification ---
 
 fn classify_category(name: &str) -> &'static str {
     let n = name.to_lowercase();
     // Nursing (hospital service fees)
-    if n.contains("护理") || n.contains("床位") || n.contains("陪护") || n.contains("诊查费") {
+    if n.contains("护理") || n.contains("床位") || n.contains("陪护") || n.contains("诊查费")
+    {
         return "nursing";
     }
     // Test / examination
-    if n.contains("检验") || n.contains("检查") || n.contains("化验") || n.contains("血常规")
-        || n.contains("尿常规") || n.contains("生化") || n.contains("培养") || n.contains("涂片")
-        || n.contains("ct") || n.contains("x线") || n.contains("超声") || n.contains("心电")
-        || n.contains("磁共振") || n.contains("mri") || n.contains("病理") || n.contains("免疫")
-        || n.contains("抗体") || n.contains("测定") || n.contains("分析")
+    if n.contains("检验")
+        || n.contains("检查")
+        || n.contains("化验")
+        || n.contains("血常规")
+        || n.contains("尿常规")
+        || n.contains("生化")
+        || n.contains("培养")
+        || n.contains("涂片")
+        || n.contains("ct")
+        || n.contains("x线")
+        || n.contains("超声")
+        || n.contains("心电")
+        || n.contains("磁共振")
+        || n.contains("mri")
+        || n.contains("病理")
+        || n.contains("免疫")
+        || n.contains("抗体")
+        || n.contains("测定")
+        || n.contains("分析")
     {
         return "test";
     }
     // Material (disposable supplies — check before drug/treatment)
-    if n.contains("一次性") || n.contains("导管") || n.contains("注射器")
-        || n.contains("输液器") || n.contains("敷料") || n.contains("接头") || n.contains("冲管")
-        || n.contains("采血管") || n.contains("针头") || n.contains("引流") || n.contains("纱布")
-        || n.contains("棉签") || n.contains("手套")
+    if n.contains("一次性")
+        || n.contains("导管")
+        || n.contains("注射器")
+        || n.contains("输液器")
+        || n.contains("敷料")
+        || n.contains("接头")
+        || n.contains("冲管")
+        || n.contains("采血管")
+        || n.contains("针头")
+        || n.contains("引流")
+        || n.contains("纱布")
+        || n.contains("棉签")
+        || n.contains("手套")
     {
         return "material";
     }
     // Drug (check dosage forms BEFORE treatment to avoid "注射" false positives)
-    if n.contains("注射液") || n.contains("注射用") || n.contains("片")
-        || n.contains("胶囊") || n.contains("口服液") || n.contains("颗粒")
-        || n.contains("滴眼") || n.contains("软膏") || n.contains("溶液")
-        || n.contains("氯化钠") || n.contains("葡萄糖") || n.contains("灭菌注射用水")
-        || n.contains("冻干粉") || n.contains("混悬") || n.contains("乳剂")
-        || n.contains("合剂") || n.contains("丸") || n.contains("散剂") || n.contains("酊")
-        || n.contains("药") || n.contains("素") || n.contains("霉") || n.contains("唑")
-        || n.contains("他汀") || n.contains("普利") || n.contains("沙坦") || n.contains("洛尔")
-        || n.contains("西泮") || n.contains("曲辛") || n.contains("噻吨") || n.contains("肝素")
-        || n.contains("甘草") || n.contains("集）") || n.contains("（集")
+    if n.contains("注射液")
+        || n.contains("注射用")
+        || n.contains("片")
+        || n.contains("胶囊")
+        || n.contains("口服液")
+        || n.contains("颗粒")
+        || n.contains("滴眼")
+        || n.contains("软膏")
+        || n.contains("溶液")
+        || n.contains("氯化钠")
+        || n.contains("葡萄糖")
+        || n.contains("灭菌注射用水")
+        || n.contains("冻干粉")
+        || n.contains("混悬")
+        || n.contains("乳剂")
+        || n.contains("合剂")
+        || n.contains("丸")
+        || n.contains("散剂")
+        || n.contains("酊")
+        || n.contains("药")
+        || n.contains("素")
+        || n.contains("霉")
+        || n.contains("唑")
+        || n.contains("他汀")
+        || n.contains("普利")
+        || n.contains("沙坦")
+        || n.contains("洛尔")
+        || n.contains("西泮")
+        || n.contains("曲辛")
+        || n.contains("噻吨")
+        || n.contains("肝素")
+        || n.contains("甘草")
+        || n.contains("集）")
+        || n.contains("（集")
     {
         return "drug";
     }
     // Treatment (procedures — now safe because drug dosage forms already matched above)
-    if n.contains("注射") || n.contains("输液") || n.contains("穿刺") || n.contains("封堵")
-        || n.contains("调配") || n.contains("换药") || n.contains("治疗") || n.contains("手术")
-        || n.contains("麻醉") || n.contains("抢救") || n.contains("加收") || n.contains("冲洗")
-        || n.contains("灌肠") || n.contains("吸氧") || n.contains("雾化")
+    if n.contains("注射")
+        || n.contains("输液")
+        || n.contains("穿刺")
+        || n.contains("封堵")
+        || n.contains("调配")
+        || n.contains("换药")
+        || n.contains("治疗")
+        || n.contains("手术")
+        || n.contains("麻醉")
+        || n.contains("抢救")
+        || n.contains("加收")
+        || n.contains("冲洗")
+        || n.contains("灌肠")
+        || n.contains("吸氧")
+        || n.contains("雾化")
     {
         return "treatment";
     }
@@ -249,13 +602,21 @@ fn split_multiday_object(s: &str) -> Option<String> {
     let mut esc = false;
 
     for i in 0..bytes.len() {
-        if esc { esc = false; continue; }
-        if bytes[i] == b'\\' && in_str { esc = true; continue; }
+        if esc {
+            esc = false;
+            continue;
+        }
+        if bytes[i] == b'\\' && in_str {
+            esc = true;
+            continue;
+        }
         if bytes[i] == b'"' {
             in_str = !in_str;
             continue;
         }
-        if in_str { continue; }
+        if in_str {
+            continue;
+        }
         match bytes[i] {
             b'{' | b'[' => depth += 1,
             b'}' | b']' => depth -= 1,
@@ -302,7 +663,11 @@ fn try_parse_expense_json(json_str: &str) -> Option<Vec<ParsedExpenseDay>> {
 
     // Strategy 0: if input is a single object with repeated "d" keys, split into array
     if let Some(fixed) = split_multiday_object(json_str) {
-        tracing::info!("S0 拆分重复key对象: {} -> {} 字符", json_str.len(), fixed.len());
+        tracing::info!(
+            "S0 拆分重复key对象: {} -> {} 字符",
+            json_str.len(),
+            fixed.len()
+        );
         if let Ok(days) = serde_json::from_str::<Vec<CompactDay>>(&fixed) {
             let total_items: usize = days.iter().map(|d| d.items.len()).sum();
             if !days.is_empty() && total_items > 0 {
@@ -346,7 +711,9 @@ fn try_parse_expense_json(json_str: &str) -> Option<Vec<ParsedExpenseDay>> {
             }
             if let Ok(days) = serde_json::from_str::<Vec<ParsedExpenseDay>>(&clean) {
                 let total_items: usize = days.iter().map(|d| d.items.len()).sum();
-                if !days.is_empty() && total_items > 0 { return Some(days); }
+                if !days.is_empty() && total_items > 0 {
+                    return Some(days);
+                }
             }
         }
     }
@@ -387,14 +754,27 @@ fn repair_truncated_json(s: &str) -> String {
     let mut stack: Vec<char> = Vec::new(); // tracks expected closing brackets
 
     for ch in trimmed.chars() {
-        if esc { esc = false; continue; }
-        if ch == '\\' && in_str { esc = true; continue; }
-        if ch == '"' { in_str = !in_str; continue; }
-        if in_str { continue; }
+        if esc {
+            esc = false;
+            continue;
+        }
+        if ch == '\\' && in_str {
+            esc = true;
+            continue;
+        }
+        if ch == '"' {
+            in_str = !in_str;
+            continue;
+        }
+        if in_str {
+            continue;
+        }
         match ch {
             '{' => stack.push('}'),
             '[' => stack.push(']'),
-            '}' | ']' => { stack.pop(); }
+            '}' | ']' => {
+                stack.pop();
+            }
             _ => {}
         }
     }
@@ -433,30 +813,51 @@ fn collect_day_objects(val: &serde_json::Value, days: &mut Vec<ParsedExpenseDay>
             let has_items = obj.contains_key("items");
             if has_date && has_items {
                 // This is a day object
-                let date = obj.get("d").or_else(|| obj.get("expense_date"))
-                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let total = obj.get("t").or_else(|| obj.get("total_amount"))
-                    .and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let date = obj
+                    .get("d")
+                    .or_else(|| obj.get("expense_date"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let total = obj
+                    .get("t")
+                    .or_else(|| obj.get("total_amount"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
 
                 let mut items = Vec::new();
                 if let Some(serde_json::Value::Array(arr)) = obj.get("items") {
                     for item_val in arr {
                         if let Some(item_obj) = item_val.as_object() {
                             // Check if this is a nested day object
-                            let is_nested_day = (item_obj.contains_key("d") || item_obj.contains_key("expense_date"))
+                            let is_nested_day = (item_obj.contains_key("d")
+                                || item_obj.contains_key("expense_date"))
                                 && item_obj.contains_key("items");
                             if is_nested_day {
                                 collect_day_objects(item_val, days);
                             } else {
                                 // Regular item
-                                let name = item_obj.get("n").or_else(|| item_obj.get("name"))
-                                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let qty = item_obj.get("q").or_else(|| item_obj.get("quantity"))
-                                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let amount = item_obj.get("a").or_else(|| item_obj.get("amount"))
-                                    .and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                let category = item_obj.get("category")
-                                    .and_then(|v| v.as_str()).unwrap_or("");
+                                let name = item_obj
+                                    .get("n")
+                                    .or_else(|| item_obj.get("name"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let qty = item_obj
+                                    .get("q")
+                                    .or_else(|| item_obj.get("quantity"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let amount = item_obj
+                                    .get("a")
+                                    .or_else(|| item_obj.get("amount"))
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0);
+                                let category = item_obj
+                                    .get("category")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
                                 let cat = if category.is_empty() {
                                     classify_category(&name).to_string()
                                 } else {
@@ -491,20 +892,24 @@ fn compact_to_full(days: Vec<CompactDay>) -> Vec<ParsedExpenseDay> {
         .map(|d| ParsedExpenseDay {
             expense_date: d.d,
             total_amount: d.t,
-            items: d.items.into_iter().map(|item| {
-                let cat = if item.category.is_empty() {
-                    classify_category(&item.n).to_string()
-                } else {
-                    item.category
-                };
-                ParsedExpenseItem {
-                    name: item.n,
-                    category: cat,
-                    quantity: item.q,
-                    amount: item.a,
-                    note: String::new(),
-                }
-            }).collect(),
+            items: d
+                .items
+                .into_iter()
+                .map(|item| {
+                    let cat = if item.category.is_empty() {
+                        classify_category(&item.n).to_string()
+                    } else {
+                        item.category
+                    };
+                    ParsedExpenseItem {
+                        name: item.n,
+                        category: cat,
+                        quantity: item.q,
+                        amount: item.a,
+                        note: String::new(),
+                    }
+                })
+                .collect(),
         })
         .collect()
 }
@@ -533,8 +938,7 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
                 .unwrap_or_else(|| format!("{}.bin", Uuid::new_v4()));
 
             // Validate file extension
-            crate::middleware::validate_file_extension(&fname)
-                .map_err(AppError::BadRequest)?;
+            crate::middleware::validate_file_extension(&fname).map_err(AppError::BadRequest)?;
 
             let data = field
                 .bytes()
@@ -550,8 +954,7 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
             }
 
             // Validate file type via magic bytes
-            crate::middleware::validate_file_magic_bytes(&data)
-                .map_err(AppError::BadRequest)?;
+            crate::middleware::validate_file_magic_bytes(&data).map_err(AppError::BadRequest)?;
 
             Ok((data.to_vec(), fname))
         }
@@ -562,20 +965,24 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
 
 /// Compress image to WebP format with max dimension constraint (runs in blocking thread).
 /// Returns (webp_bytes, mime_type). PDF files are returned as-is.
-fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_width: u32) -> Result<(Vec<u8>, &'static str), String> {
+fn compress_image_to_webp(
+    raw_bytes: &[u8],
+    file_name: &str,
+    max_dim: u32,
+) -> Result<(Vec<u8>, &'static str), String> {
     let lower = file_name.to_lowercase();
     if lower.ends_with(".pdf") {
         return Ok((raw_bytes.to_vec(), "application/pdf"));
     }
 
-    let img = image::load_from_memory(raw_bytes)
-        .map_err(|e| format!("解析图片失败: {}", e))?;
+    let img = image::load_from_memory(raw_bytes).map_err(|e| format!("解析图片失败: {}", e))?;
 
     let (w, h) = (img.width(), img.height());
-    let resized = if w > max_width {
-        let ratio = max_width as f64 / w as f64;
-        let new_w = max_width;
-        let new_h = (h as f64 * ratio) as u32;
+    // WebP max dimension is 16383; constrain both width and height
+    let resized = if w > max_dim || h > max_dim {
+        let ratio = (max_dim as f64 / w as f64).min(max_dim as f64 / h as f64);
+        let new_w = ((w as f64 * ratio) as u32).max(1);
+        let new_h = ((h as f64 * ratio) as u32).max(1);
         tracing::info!("图片缩放: {}x{} -> {}x{}", w, h, new_w, new_h);
         img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
     } else {
@@ -584,11 +991,16 @@ fn compress_image_to_webp(raw_bytes: &[u8], file_name: &str, max_width: u32) -> 
     };
 
     let mut buf = Cursor::new(Vec::new());
-    resized.write_to(&mut buf, image::ImageFormat::WebP)
+    resized
+        .write_to(&mut buf, image::ImageFormat::WebP)
         .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
     let webp_bytes = buf.into_inner();
-    tracing::info!("图片压缩: {} -> {} bytes (WebP)", raw_bytes.len(), webp_bytes.len());
+    tracing::info!(
+        "图片压缩: {} -> {} bytes (WebP)",
+        raw_bytes.len(),
+        webp_bytes.len()
+    );
     Ok((webp_bytes, "image/webp"))
 }
 
@@ -619,12 +1031,18 @@ pub async fn parse_expense(
     tracing::info!("开始识别消费清单: {} ({} bytes)", file_name, orig_size);
 
     // Step 1: Vision model to extract expense items (may contain multiple days)
-    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
-        tracing::warn!("消费清单识别失败: {}", e);
-        AppError::Internal(format!("消费清单识别失败: {}", e))
-    })?;
+    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &siliconflow_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!("消费清单识别失败: {}", e);
+            AppError::Internal(format!("消费清单识别失败: {}", e))
+        })?;
     let total_items: usize = parsed_days.iter().map(|d| d.items.len()).sum();
-    tracing::info!("消费清单识别完成, 共 {} 天 {} 项", parsed_days.len(), total_items);
+    tracing::info!(
+        "消费清单识别完成, 共 {} 天 {} 项",
+        parsed_days.len(),
+        total_items
+    );
 
     // Return recognition results immediately (analysis is done separately via /api/expenses/analyze)
     let day_results: Vec<DayParseResult> = parsed_days
@@ -635,12 +1053,13 @@ pub async fn parse_expense(
             treatment_analysis: String::new(),
         })
         .collect();
-    tracing::info!("消费清单识别完成，返回 {} 天结果（分析将按需调用）", day_results.len());
+    tracing::info!(
+        "消费清单识别完成，返回 {} 天结果（分析将按需调用）",
+        day_results.len()
+    );
 
     Ok(Json(ApiResponse::ok(
-        ExpenseParseResponse {
-            days: day_results,
-        },
+        ExpenseParseResponse { days: day_results },
         "消费清单解析成功",
     )))
 }
@@ -697,10 +1116,7 @@ pub async fn confirm_expense(
         .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
 
     Ok(Json(ApiResponse::ok(
-        DailyExpenseDetail {
-            expense,
-            items,
-        },
+        DailyExpenseDetail { expense, items },
         "消费记录保存成功",
     )))
 }
@@ -826,7 +1242,6 @@ async fn recognize_expense_bytes(
     client: &reqwest::Client,
     api_key: &str,
 ) -> Result<Vec<ParsedExpenseDay>, String> {
-
     const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
     if raw_bytes.len() > MAX_FILE_SIZE {
         return Err(format!(
@@ -835,18 +1250,107 @@ async fn recognize_expense_bytes(
         ));
     }
 
+    match recognize_expense_bytes_by_chunks(raw_bytes, file_name, client, api_key).await {
+        Ok(Some(days)) => return Ok(days),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("分块识别异常，回退整图识别: {}", e);
+        }
+    }
+
+    recognize_expense_bytes_single_call(raw_bytes, file_name, client, api_key).await
+}
+
+async fn recognize_expense_bytes_by_chunks(
+    raw_bytes: &[u8],
+    file_name: &str,
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Result<Option<Vec<ParsedExpenseDay>>, String> {
+    let raw_owned = raw_bytes.to_vec();
+    let fname_owned = file_name.to_string();
+    let chunk_images =
+        tokio::task::spawn_blocking(move || split_image_vertical_chunks(&raw_owned, &fname_owned))
+            .await
+            .map_err(|e| format!("图片分块任务失败: {}", e))??;
+
+    if chunk_images.is_empty() {
+        return Ok(None);
+    }
+
+    let chunk_count = chunk_images.len();
+    let concurrency = CHUNK_MAX_CONCURRENCY.min(chunk_count).max(1);
+    tracing::info!(
+        "超长清单启用分块识别: {} 块, 并发 {}",
+        chunk_count,
+        concurrency
+    );
+
+    let api_key_owned = api_key.to_string();
+    let mut stream = stream::iter(chunk_images.into_iter().enumerate().map(
+        |(chunk_index, bytes)| {
+            let chunk_name = format!("expense-chunk-{}.png", chunk_index);
+            let client = client.clone();
+            let api_key = api_key_owned.clone();
+            async move {
+                let days = recognize_chunk_bytes(&bytes, &chunk_name, &client, &api_key).await?;
+                Ok::<ChunkResult, String>(ChunkResult { chunk_index, days })
+            }
+        },
+    ))
+    .buffer_unordered(concurrency);
+
+    let mut chunk_results = Vec::new();
+    while let Some(result) = stream.next().await {
+        chunk_results.push(result?);
+    }
+
+    let mut summary = merge_chunk_results_boundary_safe(chunk_results);
+    let total_items: usize = summary.days.iter().map(|day| day.items.len()).sum();
+    tracing::info!(
+        "分块识别完成: {} 天, {} 项 (原始 {} 项, 边界去重 {} 项)",
+        summary.days.len(),
+        total_items,
+        summary.raw_item_count,
+        summary.removed_boundary_duplicates
+    );
+
+    if looks_like_incomplete_chunk_merge(&summary, chunk_count) {
+        tracing::warn!(
+            "分块结果疑似缺漏，回退整图识别 (块数={}, 原始项={}, 去重项={}, 最终项={})",
+            chunk_count,
+            summary.raw_item_count,
+            summary.removed_boundary_duplicates,
+            total_items
+        );
+        return Ok(None);
+    }
+
+    align_day_totals_with_items(&mut summary.days);
+    Ok(Some(summary.days))
+}
+
+async fn recognize_expense_bytes_single_call(
+    raw_bytes: &[u8],
+    file_name: &str,
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Result<Vec<ParsedExpenseDay>, String> {
     // Compress image to WebP (resize max 1500px) in blocking thread; PDF passes through
     let raw_owned = raw_bytes.to_vec();
     let fname_owned = file_name.to_string();
-    let (compressed, mime) = tokio::task::spawn_blocking(move || {
-        compress_image_to_webp(&raw_owned, &fname_owned, 1500)
-    })
-    .await
-    .map_err(|e| format!("图片压缩任务失败: {}", e))??;
+    let (compressed, mime) =
+        tokio::task::spawn_blocking(move || compress_image_to_webp(&raw_owned, &fname_owned, 1500))
+            .await
+            .map_err(|e| format!("图片压缩任务失败: {}", e))??;
 
     let data_url = tokio::task::spawn_blocking(move || {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
-        tracing::info!("Base64 编码: {} bytes -> {} chars", compressed.len(), b64.len());
+        tracing::info!(
+            "Base64 编码: {} bytes -> {} chars",
+            compressed.len(),
+            b64.len()
+        );
         format!("data:{};base64,{}", mime, b64)
     })
     .await
@@ -878,7 +1382,10 @@ async fn recognize_expense_bytes(
     });
 
     let api_url = "https://api.siliconflow.cn/v1/chat/completions";
-    tracing::info!("调用 Vision API (enable_thinking=false, 600s超时): {}", api_url);
+    tracing::info!(
+        "调用 Vision API (enable_thinking=false, 600s超时): {}",
+        api_url
+    );
     let resp = client
         .post(api_url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -908,7 +1415,11 @@ async fn recognize_expense_bytes(
     // Strip <think>...</think> blocks as fallback (should be rare with enable_thinking=false)
     let content = strip_think_blocks(&raw_content);
     if content.len() != raw_content.len() {
-        tracing::info!("剥离think块: {} -> {} 字符", raw_content.len(), content.len());
+        tracing::info!(
+            "剥离think块: {} -> {} 字符",
+            raw_content.len(),
+            content.len()
+        );
     }
 
     // Try extract_json_block first (works for well-formed JSON)
@@ -916,7 +1427,8 @@ async fn recognize_expense_bytes(
 
     if let Ok(ref js) = json_str {
         tracing::info!("JSON提取成功 {} 字符", js.len());
-        if let Some(days) = try_parse_expense_json(js) {
+        if let Some(mut days) = try_parse_expense_json(js) {
+            align_day_totals_with_items(&mut days);
             return Ok(days);
         }
     } else {
@@ -926,7 +1438,8 @@ async fn recognize_expense_bytes(
     // Fallback: repair truncated JSON + flatten nested days (handles both truncation and nesting)
     let repaired = repair_truncated_json(&content);
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&repaired) {
-        let days = flatten_nested_days(&val);
+        let mut days = flatten_nested_days(&val);
+        align_day_totals_with_items(&mut days);
         let total_items: usize = days.iter().map(|d| d.items.len()).sum();
         tracing::info!("修复+展平: {} 天, {} 项", days.len(), total_items);
         if !days.is_empty() && total_items > 0 {
@@ -942,7 +1455,10 @@ async fn recognize_expense_bytes(
     };
     let log_preview: String = content.chars().take(500).collect();
     tracing::error!("消费清单解析全部失败, 原始内容前500: {}", log_preview);
-    Err(format!("消费清单识别结果格式异常，请重试。内容预览: {}", preview))
+    Err(format!(
+        "消费清单识别结果格式异常，请重试。内容预览: {}",
+        preview
+    ))
 }
 
 // --- Analyze expense day handler (separate endpoint) ---
@@ -976,8 +1492,9 @@ pub async fn analyze_expense_day(
 
     let llm_key = super::get_llm_api_key(&state.db, &auth.0.sub);
     let client = state.http_client.clone();
-    let (drug_analysis, treatment_analysis) =
-        analyze_treatment(&client, &req.items, &llm_key).await.unwrap_or_else(|e| {
+    let (drug_analysis, treatment_analysis) = analyze_treatment(&client, &req.items, &llm_key)
+        .await
+        .unwrap_or_else(|e| {
             tracing::warn!("治疗方案分析失败: {}", e);
             (String::new(), String::new())
         });
@@ -1026,8 +1543,8 @@ async fn analyze_treatment(
         treatment_analysis: String,
     }
 
-    let result: AnalysisResult = serde_json::from_str(&json_str)
-        .map_err(|e| format!("解析分析 JSON 失败: {}", e))?;
+    let result: AnalysisResult =
+        serde_json::from_str(&json_str).map_err(|e| format!("解析分析 JSON 失败: {}", e))?;
 
     Ok((result.drug_analysis, result.treatment_analysis))
 }
@@ -1063,12 +1580,18 @@ pub async fn parse_chunk(
         ));
     }
 
-    tracing::info!("开始识别消费清单条带: {} ({} bytes)", file_name, raw_bytes.len());
+    tracing::info!(
+        "开始识别消费清单条带: {} ({} bytes)",
+        file_name,
+        raw_bytes.len()
+    );
 
-    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
-        tracing::warn!("条带识别失败: {}", e);
-        AppError::Internal(format!("条带识别失败: {}", e))
-    })?;
+    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &siliconflow_key)
+        .await
+        .map_err(|e| {
+            tracing::warn!("条带识别失败: {}", e);
+            AppError::Internal(format!("条带识别失败: {}", e))
+        })?;
 
     let total_items: usize = parsed_days.iter().map(|d| d.items.len()).sum();
     tracing::info!("条带识别完成: {} 天, {} 项", parsed_days.len(), total_items);
@@ -1083,15 +1606,13 @@ async fn recognize_chunk_bytes(
     client: &reqwest::Client,
     api_key: &str,
 ) -> Result<Vec<ParsedExpenseDay>, String> {
-
     // Compress image to WebP in blocking thread
     let raw_owned = raw_bytes.to_vec();
     let fname_owned = file_name.to_string();
-    let (compressed, mime) = tokio::task::spawn_blocking(move || {
-        compress_image_to_webp(&raw_owned, &fname_owned, 1500)
-    })
-    .await
-    .map_err(|e| format!("图片压缩任务失败: {}", e))??;
+    let (compressed, mime) =
+        tokio::task::spawn_blocking(move || compress_image_to_webp(&raw_owned, &fname_owned, 1500))
+            .await
+            .map_err(|e| format!("图片压缩任务失败: {}", e))??;
 
     let data_url = tokio::task::spawn_blocking(move || {
         let b64 = base64::engine::general_purpose::STANDARD.encode(&compressed);
@@ -1155,7 +1676,8 @@ async fn recognize_chunk_bytes(
 
     let json_str = super::extract_json_block(&content);
     if let Ok(ref js) = json_str {
-        if let Some(days) = try_parse_expense_json(js) {
+        if let Some(mut days) = try_parse_expense_json(js) {
+            align_day_totals_with_items(&mut days);
             return Ok(days);
         }
     }
@@ -1163,7 +1685,8 @@ async fn recognize_chunk_bytes(
     // Fallback: repair truncated JSON
     let repaired = repair_truncated_json(&content);
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&repaired) {
-        let days = flatten_nested_days(&val);
+        let mut days = flatten_nested_days(&val);
+        align_day_totals_with_items(&mut days);
         let total_items: usize = days.iter().map(|d| d.items.len()).sum();
         if !days.is_empty() && total_items > 0 {
             return Ok(days);
@@ -1188,7 +1711,7 @@ pub struct MergeChunksReq {
 
 /// Merge multiple chunk recognition results using LLM text model
 pub async fn merge_chunks(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<MergeChunksReq>,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
     if req.chunks.is_empty() {
@@ -1200,7 +1723,8 @@ pub async fn merge_chunks(
 
     // If only one chunk, return directly without LLM merge
     if req.chunks.len() == 1 {
-        let days = req.chunks.into_iter().next().unwrap().days;
+        let mut days = req.chunks.into_iter().next().unwrap().days;
+        align_day_totals_with_items(&mut days);
         let day_results: Vec<DayParseResult> = days
             .into_iter()
             .map(|day| DayParseResult {
@@ -1215,84 +1739,21 @@ pub async fn merge_chunks(
         )));
     }
 
-    // Sort chunks by index
-    let mut chunks = req.chunks;
-    chunks.sort_by_key(|c| c.chunk_index);
+    let chunk_count = req.chunks.len();
+    tracing::info!("算法合并 {} 个条带的识别结果", chunk_count);
 
-    // --- Algorithmic merge: no LLM needed ---
-    // 1. Flatten all items, tracking current date from chunks that have one
-    // 2. Group by date
-    // 3. Deduplicate within each day (same name+quantity+amount = same line item)
+    let summary = merge_chunk_results_boundary_safe(req.chunks);
+    let total_items: usize = summary.days.iter().map(|d| d.items.len()).sum();
+    tracing::info!(
+        "合并完成: {} 天, {} 项 (原始 {} 项, 边界去重 {} 项)",
+        summary.days.len(),
+        total_items,
+        summary.raw_item_count,
+        summary.removed_boundary_duplicates
+    );
 
-    tracing::info!("算法合并 {} 个条带的识别结果", chunks.len());
-
-    // Collect all (date, item) pairs in strip order, tracking last known date
-    let mut current_date = String::new();
-    let mut day_map: indexmap::IndexMap<String, Vec<ParsedExpenseItem>> = indexmap::IndexMap::new();
-
-    let mut raw_count: usize = 0;
-    for chunk in &chunks {
-        for day in &chunk.days {
-            // Update current date if this chunk has a real date
-            if !day.expense_date.is_empty() {
-                current_date = day.expense_date.clone();
-            }
-
-            let date_key = if current_date.is_empty() {
-                "未知日期".to_string()
-            } else {
-                current_date.clone()
-            };
-
-            let items_list = day_map.entry(date_key).or_default();
-            for item in &day.items {
-                raw_count += 1;
-                items_list.push(item.clone());
-            }
-        }
-    }
-
-    // Deduplicate within each day: same (name, quantity, amount) = same line item
-    for (_date, items) in day_map.iter_mut() {
-        let mut seen: Vec<(String, String, i64)> = Vec::new();
-        items.retain(|item| {
-            let amount_cents = (item.amount * 100.0).round() as i64;
-            let key = (item.name.clone(), item.quantity.clone(), amount_cents);
-            if seen.contains(&key) {
-                false // duplicate within same day
-            } else {
-                seen.push(key);
-                true
-            }
-        });
-    }
-
-    // Sort by date and build result
-    let mut date_keys: Vec<String> = day_map.keys().cloned().collect();
-    date_keys.sort();
-
-    let merged_days: Vec<ParsedExpenseDay> = date_keys
-        .into_iter()
-        .map(|date| {
-            let items = day_map.remove(&date).unwrap_or_default();
-            let total: f64 = items.iter().map(|i| i.amount).sum();
-            let expense_date = if date == "未知日期" {
-                String::new()
-            } else {
-                date
-            };
-            ParsedExpenseDay {
-                expense_date,
-                total_amount: (total * 100.0).round() / 100.0,
-                items,
-            }
-        })
-        .collect();
-
-    let total_items: usize = merged_days.iter().map(|d| d.items.len()).sum();
-    tracing::info!("合并完成: {} 天, {} 项 (原始 {} 项, 去重 {} 项)", merged_days.len(), total_items, raw_count, raw_count - total_items);
-
-    let day_results: Vec<DayParseResult> = merged_days
+    let day_results: Vec<DayParseResult> = summary
+        .days
         .into_iter()
         .map(|day| DayParseResult {
             parsed: day,
