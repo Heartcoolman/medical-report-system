@@ -11,9 +11,11 @@ use crate::error::AppError;
 use crate::models::{ApiResponse, ItemStatus, Report, ReportDetail, TestItem};
 
 fn parse_item_status(s: &str) -> ItemStatus {
-    match s {
+    match s.trim().to_lowercase().as_str() {
+        "critical_high" => ItemStatus::CriticalHigh,
         "high" => ItemStatus::High,
         "low" => ItemStatus::Low,
+        "critical_low" => ItemStatus::CriticalLow,
         _ => ItemStatus::Normal,
     }
 }

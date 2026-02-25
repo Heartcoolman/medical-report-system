@@ -88,6 +88,8 @@ export interface UpdateReportReq {
 
 // --- Test Item ---
 
+export type ItemStatus = 'critical_high' | 'high' | 'normal' | 'low' | 'critical_low';
+
 export interface TestItem {
   id: string;
   report_id: string;
@@ -95,7 +97,7 @@ export interface TestItem {
   value: string;
   unit: string;
   reference_range: string;
-  status: 'normal' | 'high' | 'low';
+  status: ItemStatus;
   canonical_name: string;
 }
 
@@ -105,7 +107,7 @@ export interface CreateTestItemReq {
   value: string;
   unit: string;
   reference_range: string;
-  status: 'normal' | 'high' | 'low';
+  status: ItemStatus;
 }
 
 // --- OCR ---
@@ -129,7 +131,7 @@ export interface ParsedItem {
   value: string;
   unit: string;
   reference_range: string;
-  status: 'normal' | 'high' | 'low';
+  status: ItemStatus;
 }
 
 // --- Suggest Groups ---
@@ -231,7 +233,7 @@ export interface UpdateTestItemReq {
   value?: string;
   unit?: string;
   reference_range?: string;
-  status?: 'normal' | 'high' | 'low';
+  status?: ItemStatus;
 }
 
 // --- Expense ---
@@ -340,7 +342,7 @@ export interface TrendPoint {
   sample_date: string;
   value: string;
   unit: string;
-  status: 'normal' | 'high' | 'low';
+  status: ItemStatus;
   reference_range: string;
 }
 

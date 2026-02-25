@@ -38,7 +38,9 @@ export function formatDate(dateStr: string): string {
 }
 
 export function statusColor(status: string): string {
+  if (status === 'critical_high') return 'var(--error)'
   if (status === 'high') return 'var(--error)'
+  if (status === 'critical_low') return 'var(--error)'
   if (status === 'low') return 'var(--info)'
   return 'var(--success)'
 }

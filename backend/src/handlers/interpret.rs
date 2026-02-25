@@ -193,8 +193,10 @@ fn format_test_items(items: &[crate::models::TestItem]) -> String {
     let mut lines = Vec::with_capacity(items.len());
     for item in items {
         let flag = match item.status {
+            crate::models::ItemStatus::CriticalHigh => " ↑严重偏高",
             crate::models::ItemStatus::High => " ↑偏高",
             crate::models::ItemStatus::Low => " ↓偏低",
+            crate::models::ItemStatus::CriticalLow => " ↓严重偏低",
             crate::models::ItemStatus::Normal => "",
         };
         lines.push(format!(
@@ -232,8 +234,10 @@ fn format_trend_points(item_name: &str, points: &[crate::models::TrendPoint]) ->
             &p.sample_date
         };
         let flag = match p.status {
+            crate::models::ItemStatus::CriticalHigh => " ↑↑",
             crate::models::ItemStatus::High => " ↑",
             crate::models::ItemStatus::Low => " ↓",
+            crate::models::ItemStatus::CriticalLow => " ↓↓",
             crate::models::ItemStatus::Normal => "",
         };
         lines.push(format!(

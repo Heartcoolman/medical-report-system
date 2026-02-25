@@ -75,18 +75,76 @@ fn parse_gender(value: &str) -> Gender {
 
 fn status_to_db(status: &ItemStatus) -> &'static str {
     match status {
+        ItemStatus::CriticalHigh => "CriticalHigh",
         ItemStatus::Normal => "Normal",
         ItemStatus::High => "High",
         ItemStatus::Low => "Low",
+        ItemStatus::CriticalLow => "CriticalLow",
     }
 }
 
 fn parse_status(value: &str) -> ItemStatus {
-    match value.to_lowercase().as_str() {
+    match value.trim().to_lowercase().as_str() {
+        "critical_high" | "criticalhigh" => ItemStatus::CriticalHigh,
         "high" => ItemStatus::High,
         "low" => ItemStatus::Low,
+        "critical_low" | "criticallow" => ItemStatus::CriticalLow,
         _ => ItemStatus::Normal,
     }
+}
+
+fn has_value_comparator_prefix(value: &str) -> bool {
+    matches!(
+        value.trim().chars().next(),
+        Some('<' | '>' | '≤' | '≥' | '＜' | '＞')
+    )
+}
+
+fn backfill_comparator_statuses(conn: &Connection) -> Result<(), AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, value, reference_range, status
+         FROM test_items
+         WHERE reference_range <> ''",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut updated = 0usize;
+    for (id, value, reference_range, raw_status) in rows {
+        if !has_value_comparator_prefix(&value) {
+            continue;
+        }
+
+        let fallback = parse_status(&raw_status);
+        let computed = crate::ocr::parser::determine_status_from_value_text(
+            &value,
+            &reference_range,
+            fallback,
+        );
+
+        if computed != fallback {
+            conn.execute(
+                "UPDATE test_items SET status = ?1 WHERE id = ?2",
+                params![status_to_db(&computed), id],
+            )?;
+            updated += 1;
+        }
+    }
+
+    if updated > 0 {
+        tracing::info!("修正了 {} 条比较符项目状态", updated);
+    }
+
+    Ok(())
 }
 
 fn category_to_db(category: &ExpenseCategory) -> &'static str {
@@ -277,6 +335,8 @@ impl Database {
             );
             "#,
         )?;
+
+        backfill_comparator_statuses(&conn)?;
 
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
@@ -497,7 +557,7 @@ impl Database {
                     "SELECT COUNT(*)
                      FROM test_items ti
                      JOIN reports r ON ti.report_id = r.id
-                     WHERE r.patient_id = ?1 AND (ti.status = 'High' OR ti.status = 'Low')",
+                     WHERE r.patient_id = ?1 AND LOWER(ti.status) <> 'normal'",
                     params![patient.id],
                     |row| row.get(0),
                 )?;
@@ -738,7 +798,7 @@ impl Database {
                 for row in rows {
                     let (name, status) = row?;
                     item_count += 1;
-                    if status == ItemStatus::High || status == ItemStatus::Low {
+                    if status.is_abnormal() {
                         abnormal_count += 1;
                         abnormal_names.push(name);
                     }

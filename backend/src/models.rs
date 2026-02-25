@@ -20,19 +20,27 @@ impl fmt::Display for Gender {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemStatus {
-    Normal,
+    #[serde(rename = "critical_high")]
+    CriticalHigh,
+    #[serde(rename = "high")]
     High,
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "low")]
     Low,
+    #[serde(rename = "critical_low")]
+    CriticalLow,
 }
 
 impl fmt::Display for ItemStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ItemStatus::CriticalHigh => write!(f, "critical_high"),
             ItemStatus::Normal => write!(f, "normal"),
             ItemStatus::High => write!(f, "high"),
+            ItemStatus::CriticalLow => write!(f, "critical_low"),
             ItemStatus::Low => write!(f, "low"),
         }
     }
@@ -41,10 +49,16 @@ impl fmt::Display for ItemStatus {
 impl ItemStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
+            ItemStatus::CriticalHigh => "critical_high",
             ItemStatus::Normal => "normal",
             ItemStatus::High => "high",
+            ItemStatus::CriticalLow => "critical_low",
             ItemStatus::Low => "low",
         }
+    }
+
+    pub fn is_abnormal(&self) -> bool {
+        !matches!(self, ItemStatus::Normal)
     }
 }
 

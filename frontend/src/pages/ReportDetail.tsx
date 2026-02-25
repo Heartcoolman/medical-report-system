@@ -8,7 +8,7 @@ import type { TableColumn } from '@/components'
 import { Table } from '@/components'
 import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
-import type { TestItem, CreateTestItemReq, UpdateTestItemReq } from '@/api/types'
+import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus } from '@/api/types'
 import { LlmInterpret } from '@/components/LlmInterpret'
 
 export default function ReportDetail() {
@@ -164,8 +164,10 @@ export default function ReportDetail() {
   }
 
   const statusColorMap: Record<string, string> = {
+    critical_high: 'text-error',
     high: 'text-error',
     low: 'text-info',
+    critical_low: 'text-error',
   }
 
   const columns: TableColumn<TestItem>[] = [
@@ -479,11 +481,13 @@ export default function ReportDetail() {
                   <Select
                     label="状态"
                     value={editItemForm().status ?? 'normal'}
-                    onChange={(e) => setEditItemForm(f => ({ ...f, status: e.currentTarget.value as 'normal' | 'high' | 'low' }))}
+                    onChange={(e) => setEditItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
                   >
-                    <option value="normal">正常</option>
+                    <option value="critical_high">严重偏高</option>
                     <option value="high">偏高</option>
+                    <option value="normal">正常</option>
                     <option value="low">偏低</option>
+                    <option value="critical_low">严重偏低</option>
                   </Select>
                 </div>
               </Modal>
@@ -542,11 +546,13 @@ export default function ReportDetail() {
                   <Select
                     label="状态"
                     value={itemForm().status}
-                    onChange={(e) => setItemForm(f => ({ ...f, status: e.currentTarget.value as 'normal' | 'high' | 'low' }))}
+                    onChange={(e) => setItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
                   >
-                    <option value="normal">正常</option>
+                    <option value="critical_high">严重偏高</option>
                     <option value="high">偏高</option>
+                    <option value="normal">正常</option>
                     <option value="low">偏低</option>
+                    <option value="critical_low">严重偏低</option>
                   </Select>
                 </div>
               </Modal>

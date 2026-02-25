@@ -144,7 +144,7 @@ fn extract_items(text: &str) -> Vec<ParsedItem> {
         };
         let unit = caps[3].to_string();
         let range_str = caps[4].to_string();
-        let status = determine_status(value, &range_str);
+        let status = determine_status_with_severity(value, &range_str);
 
         items.push(ParsedItem {
             name,
@@ -192,6 +192,287 @@ static RE_UPPER_BOUND: LazyLock<Regex> =
 /// Matches lower-bound-only ranges like ">0.5", "＞1", "≥60"
 static RE_LOWER_BOUND: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([>＞≥])\s*(\d+\.?\d*)$").expect("无法编译下限正则"));
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RangeKind {
+    Interval { low: f64, high: f64 },
+    UpperBound { bound: f64, inclusive: bool },
+    LowerBound { bound: f64, inclusive: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ValueKind {
+    Exact(f64),
+    LessThan(f64),
+    LessOrEqual(f64),
+    GreaterThan(f64),
+    GreaterOrEqual(f64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DomainBound {
+    value: f64,
+    inclusive: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ValueDomain {
+    min: Option<DomainBound>,
+    max: Option<DomainBound>,
+}
+
+fn parse_strict_number(raw: &str) -> Option<f64> {
+    let cleaned = raw
+        .trim()
+        .trim_matches(|c: char| matches!(c, '↑' | '↓' | '★' | '☆' | '*'));
+    cleaned.parse::<f64>().ok()
+}
+
+fn parse_range_kind(range: &str) -> Option<RangeKind> {
+    let range = range.trim();
+
+    if let Some(caps) = RE_UPPER_BOUND.captures(range) {
+        if let Ok(bound) = caps[2].parse::<f64>() {
+            return Some(RangeKind::UpperBound {
+                bound,
+                inclusive: &caps[1] == "≤",
+            });
+        }
+    }
+
+    if let Some(caps) = RE_LOWER_BOUND.captures(range) {
+        if let Ok(bound) = caps[2].parse::<f64>() {
+            return Some(RangeKind::LowerBound {
+                bound,
+                inclusive: &caps[1] == "≥",
+            });
+        }
+    }
+
+    if let Some(caps) = RE_RANGE.captures(range) {
+        if let (Ok(low), Ok(high)) = (caps[1].parse::<f64>(), caps[2].parse::<f64>()) {
+            return Some(RangeKind::Interval { low, high });
+        }
+    }
+
+    None
+}
+
+fn parse_value_kind(value_text: &str) -> Option<ValueKind> {
+    let value = value_text.trim();
+
+    if let Some(rest) = value.strip_prefix("≤") {
+        return parse_strict_number(rest).map(ValueKind::LessOrEqual);
+    }
+    if let Some(rest) = value.strip_prefix("≥") {
+        return parse_strict_number(rest).map(ValueKind::GreaterOrEqual);
+    }
+    if let Some(rest) = value.strip_prefix('<').or_else(|| value.strip_prefix('＜')) {
+        return parse_strict_number(rest).map(ValueKind::LessThan);
+    }
+    if let Some(rest) = value.strip_prefix('>').or_else(|| value.strip_prefix('＞')) {
+        return parse_strict_number(rest).map(ValueKind::GreaterThan);
+    }
+
+    parse_strict_number(value).map(ValueKind::Exact)
+}
+
+impl ValueKind {
+    fn exact_value(self) -> Option<f64> {
+        match self {
+            ValueKind::Exact(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn to_domain(self) -> ValueDomain {
+        match self {
+            ValueKind::Exact(v) => ValueDomain {
+                min: Some(DomainBound {
+                    value: v,
+                    inclusive: true,
+                }),
+                max: Some(DomainBound {
+                    value: v,
+                    inclusive: true,
+                }),
+            },
+            ValueKind::LessThan(v) => ValueDomain {
+                min: None,
+                max: Some(DomainBound {
+                    value: v,
+                    inclusive: false,
+                }),
+            },
+            ValueKind::LessOrEqual(v) => ValueDomain {
+                min: None,
+                max: Some(DomainBound {
+                    value: v,
+                    inclusive: true,
+                }),
+            },
+            ValueKind::GreaterThan(v) => ValueDomain {
+                min: Some(DomainBound {
+                    value: v,
+                    inclusive: false,
+                }),
+                max: None,
+            },
+            ValueKind::GreaterOrEqual(v) => ValueDomain {
+                min: Some(DomainBound {
+                    value: v,
+                    inclusive: true,
+                }),
+                max: None,
+            },
+        }
+    }
+}
+
+fn domain_strictly_above(domain: ValueDomain, threshold: f64) -> bool {
+    match domain.min {
+        Some(min) => min.value > threshold || (min.value == threshold && !min.inclusive),
+        None => false,
+    }
+}
+
+fn domain_at_least(domain: ValueDomain, threshold: f64) -> bool {
+    match domain.min {
+        Some(min) => min.value > threshold || (min.value == threshold && min.inclusive),
+        None => false,
+    }
+}
+
+fn domain_strictly_below(domain: ValueDomain, threshold: f64) -> bool {
+    match domain.max {
+        Some(max) => max.value < threshold || (max.value == threshold && !max.inclusive),
+        None => false,
+    }
+}
+
+fn domain_at_most(domain: ValueDomain, threshold: f64) -> bool {
+    match domain.max {
+        Some(max) => max.value < threshold || (max.value == threshold && max.inclusive),
+        None => false,
+    }
+}
+
+fn determine_status_by_domain(domain: ValueDomain, range: RangeKind) -> ItemStatus {
+    match range {
+        RangeKind::Interval { low, high } => {
+            if domain_strictly_above(domain, high) {
+                ItemStatus::High
+            } else if domain_strictly_below(domain, low) {
+                ItemStatus::Low
+            } else {
+                ItemStatus::Normal
+            }
+        }
+        RangeKind::UpperBound { bound, inclusive } => {
+            let always_high = if inclusive {
+                domain_strictly_above(domain, bound)
+            } else {
+                domain_at_least(domain, bound)
+            };
+            if always_high {
+                ItemStatus::High
+            } else {
+                ItemStatus::Normal
+            }
+        }
+        RangeKind::LowerBound { bound, inclusive } => {
+            let always_low = if inclusive {
+                domain_strictly_below(domain, bound)
+            } else {
+                domain_at_most(domain, bound)
+            };
+            if always_low {
+                ItemStatus::Low
+            } else {
+                ItemStatus::Normal
+            }
+        }
+    }
+}
+
+fn is_critical_high(value: f64, range: &str) -> bool {
+    let Some(kind) = parse_range_kind(range) else {
+        return false;
+    };
+
+    match kind {
+        RangeKind::Interval { low, high } => {
+            let span = high - low;
+            span > 0.0 && (value - high) / span > 0.5
+        }
+        RangeKind::UpperBound { bound, .. } => {
+            let span = bound.abs();
+            span > 0.0 && (value - bound) / span > 0.5
+        }
+        RangeKind::LowerBound { .. } => false,
+    }
+}
+
+fn is_critical_low(value: f64, range: &str) -> bool {
+    let Some(kind) = parse_range_kind(range) else {
+        return false;
+    };
+
+    match kind {
+        RangeKind::Interval { low, high } => {
+            let span = high - low;
+            span > 0.0 && (low - value) / span > 0.5
+        }
+        RangeKind::LowerBound { bound, .. } => {
+            let span = bound.abs();
+            span > 0.0 && (bound - value) / span > 0.5
+        }
+        RangeKind::UpperBound { .. } => false,
+    }
+}
+
+pub fn determine_status_with_severity(value: f64, range: &str) -> ItemStatus {
+    let base = determine_status(value, range);
+    match base {
+        ItemStatus::High => {
+            if is_critical_high(value, range) {
+                ItemStatus::CriticalHigh
+            } else {
+                ItemStatus::High
+            }
+        }
+        ItemStatus::Low => {
+            if is_critical_low(value, range) {
+                ItemStatus::CriticalLow
+            } else {
+                ItemStatus::Low
+            }
+        }
+        _ => base,
+    }
+}
+
+pub fn determine_status_from_value_text(
+    value_text: &str,
+    range: &str,
+    fallback: ItemStatus,
+) -> ItemStatus {
+    let Some(range_kind) = parse_range_kind(range) else {
+        return fallback;
+    };
+    let Some(value_kind) = parse_value_kind(value_text) else {
+        return fallback;
+    };
+
+    if let Some(exact) = value_kind.exact_value() {
+        if !value_in_plausible_range(exact, range) {
+            return fallback;
+        }
+        return determine_status_with_severity(exact, range);
+    }
+
+    determine_status_by_domain(value_kind.to_domain(), range_kind)
+}
 
 pub fn determine_status(value: f64, range: &str) -> ItemStatus {
     let range = range.trim();
@@ -357,5 +638,54 @@ mod tests {
         assert_eq!(determine_status(61.0, ">60"), ItemStatus::Normal);
         assert_eq!(determine_status(60.0, "≥60"), ItemStatus::Normal);
         assert_eq!(determine_status(59.0, "≥60"), ItemStatus::Low);
+    }
+
+    #[test]
+    fn test_critical_status_for_exact_numeric_values() {
+        assert_eq!(
+            determine_status_with_severity(16.0, "0.5～2"),
+            ItemStatus::CriticalHigh
+        );
+        assert_eq!(
+            determine_status_with_severity(2.5, "0.5～2"),
+            ItemStatus::High
+        );
+        assert_eq!(
+            determine_status_with_severity(-1.0, "0.5～2"),
+            ItemStatus::CriticalLow
+        );
+    }
+
+    #[test]
+    fn test_status_from_comparator_values_is_conservative() {
+        // "<16" with "0.5～2" cannot prove high/low, so classify as normal.
+        assert_eq!(
+            determine_status_from_value_text("<16", "0.5～2", ItemStatus::High),
+            ItemStatus::Normal
+        );
+
+        // If comparator makes the direction certain, still classify as abnormal.
+        assert_eq!(
+            determine_status_from_value_text("<0.2", "0.5～2", ItemStatus::Normal),
+            ItemStatus::Low
+        );
+        assert_eq!(
+            determine_status_from_value_text(">3", "0.5～2", ItemStatus::Normal),
+            ItemStatus::High
+        );
+    }
+
+    #[test]
+    fn test_status_from_value_text_keeps_fallback_for_non_numeric_or_implausible() {
+        assert_eq!(
+            determine_status_from_value_text("阴性", "0.5～2", ItemStatus::High),
+            ItemStatus::High
+        );
+
+        // Very implausible exact value keeps fallback to avoid row-mismatch overrides.
+        assert_eq!(
+            determine_status_from_value_text("16", "0.5～2", ItemStatus::High),
+            ItemStatus::High
+        );
     }
 }
