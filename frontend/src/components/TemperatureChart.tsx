@@ -92,10 +92,19 @@ export function TemperatureChart(props: TemperatureChartProps) {
   })
 
   // Time-proportional x scale
+  const MIN_TIME_SPAN = 24 * 60 * 60 * 1000 // 最小显示跨度 24 小时
   const timeRange = createMemo(() => {
     if (props.data.length <= 1) return null
     const times = props.data.map(r => parseRecordedAt(r.recorded_at))
-    return { min: Math.min(...times), max: Math.max(...times) }
+    let min = Math.min(...times)
+    let max = Math.max(...times)
+    const span = max - min
+    if (span < MIN_TIME_SPAN) {
+      const center = (min + max) / 2
+      min = center - MIN_TIME_SPAN / 2
+      max = center + MIN_TIME_SPAN / 2
+    }
+    return { min, max }
   })
 
   const xScale = (i: number) => {
