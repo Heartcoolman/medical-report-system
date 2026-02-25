@@ -891,13 +891,6 @@ impl Database {
                     canonical_name: row.get(7)?,
                 };
 
-                if let Ok(v) = item.value.parse::<f64>() {
-                    if !item.reference_range.is_empty() {
-                        item.status =
-                            crate::ocr::parser::determine_status(v, &item.reference_range);
-                    }
-                }
-
                 Ok(item)
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1256,19 +1249,12 @@ impl Database {
                         continue;
                     }
 
-                    let mut status = item.status;
-                    if let Ok(v) = item.value.parse::<f64>() {
-                        if !item.reference_range.is_empty() {
-                            status = crate::ocr::parser::determine_status(v, &item.reference_range);
-                        }
-                    }
-
                     points.push(TrendPoint {
                         report_date: report.report_date,
                         sample_date: report.sample_date,
                         value: item.value,
                         unit: item.unit,
-                        status,
+                        status: item.status,
                         reference_range: item.reference_range,
                     });
                     seen_dates.insert(effective_date);
