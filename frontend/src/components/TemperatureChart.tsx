@@ -224,9 +224,9 @@ export function TemperatureChart(props: TemperatureChartProps) {
               to   { opacity: 1; }
             }
             @keyframes tempPointPop {
-              0%   { r: 0; opacity: 0; }
-              60%  { r: 5.2; opacity: 1; }
-              100% { r: 4.2; opacity: 1; }
+              0%   { transform: scale(0); opacity: 0; }
+              60%  { transform: scale(1.2); opacity: 1; }
+              100% { transform: scale(1); opacity: 1; }
             }
             .temp-line-anim {
               stroke-dasharray: 2000;
@@ -238,7 +238,9 @@ export function TemperatureChart(props: TemperatureChartProps) {
               animation: tempAreaFade 0.6s ease-out 0.3s forwards;
             }
             .temp-point-anim {
-              r: 0;
+              transform: scale(0);
+              transform-box: fill-box;
+              transform-origin: center;
               opacity: 0;
               animation: tempPointPop 0.4s ease-out forwards;
             }
