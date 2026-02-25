@@ -65,3 +65,6 @@ export type { SearchBarProps } from './SearchBar'
 
 export { FloatingActionButton } from './FloatingActionButton'
 export type { FloatingActionButtonProps } from './FloatingActionButton'
+
+export { default as ReloadPrompt } from './ReloadPrompt'
+export { default as PWAInstallPrompt } from './PWAInstallPrompt'

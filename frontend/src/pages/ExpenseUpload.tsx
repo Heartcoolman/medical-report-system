@@ -169,7 +169,6 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       toast('error', err.message || '解析失败')
     } finally {
       setParsing(false)
-      setMerging(false)
     }
   }
 
@@ -188,7 +187,6 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
     setConfirmOverwrite(false)
     setStep('preview')
     setParsing(false)
-    setMerging(false)
 
     // Fire concurrent analysis for each day in background
     const analyzing = new Set(days.map((_, i) => i).filter(i => days[i].items.length > 0))

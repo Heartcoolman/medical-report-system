@@ -2,6 +2,8 @@ import { lazy, Suspense } from 'solid-js'
 import { ToastProvider, Spinner } from './components'
 import { Router, Route, A } from '@solidjs/router'
 import AppLayout from './layouts/AppLayout'
+import ReloadPrompt from './components/ReloadPrompt'
+import PWAInstallPrompt from './components/PWAInstallPrompt'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const PatientCreate = lazy(() => import('./pages/PatientCreate'))
@@ -38,6 +40,8 @@ function App() {
           <Route path="*" component={NotFound} />
         </Suspense>
       </Router>
+      <ReloadPrompt />
+      <PWAInstallPrompt />
     </ToastProvider>
   )
 }
