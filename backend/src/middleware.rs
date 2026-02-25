@@ -13,8 +13,14 @@ pub async fn security_headers(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response<axum::body::Body> {
+    let is_sw = request.uri().path() == "/sw.js";
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
+
+    // SW must not be cached so browsers pick up updates immediately
+    if is_sw {
+        headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    }
 
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
