@@ -412,6 +412,21 @@ export interface UserInfo {
   created_at: string;
 }
 
+// --- Critical Alerts ---
+
+export interface CriticalAlert {
+  patient_id: string;
+  patient_name: string;
+  report_id: string;
+  report_type: string;
+  report_date: string;
+  item_name: string;
+  value: string;
+  unit: string;
+  reference_range: string;
+  status: 'critical_high' | 'critical_low';
+}
+
 // --- Trends ---
 
 export interface TrendPoint {

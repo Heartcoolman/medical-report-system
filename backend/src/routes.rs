@@ -109,6 +109,11 @@ fn readonly_routes() -> Router<AppState> {
             "/api/patients/:patient_id/timeline",
             get(handlers::stats::get_timeline),
         )
+        // Critical alerts (read)
+        .route(
+            "/api/stats/critical-alerts",
+            get(handlers::stats::get_critical_alerts),
+        )
 }
 
 /// Routes accessible by Nurse and above.
@@ -267,6 +272,16 @@ fn admin_routes() -> Router<AppState> {
         .route(
             "/api/admin/users/:id",
             axum::routing::delete(handlers::admin::delete_user),
+        )
+        // Backup & Restore
+        .route(
+            "/api/admin/backup",
+            get(handlers::backup::download_backup),
+        )
+        .route(
+            "/api/admin/restore",
+            post(handlers::backup::restore_backup)
+                .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
         )
         .layer(axum_mw::from_fn(auth::require_role(Role::Admin)))
 }

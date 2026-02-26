@@ -7,6 +7,7 @@ import ReportUpload from './ReportUpload'
 import ExpenseUpload from './ExpenseUpload'
 import { LlmInterpret } from '@/components/LlmInterpret'
 import { exportAllReportsCSV } from '@/lib/export'
+import { exportAllReportsPDF } from '@/lib/export-pdf'
 
 export default function PatientDetail() {
   const params = useParams<{ id: string }>()
@@ -239,6 +240,54 @@ export default function PatientDetail() {
 
   const PAGE_SIZE = 9
   const [reportPage, setReportPage] = createSignal(1)
+
+  // Batch select mode
+  const [batchMode, setBatchMode] = createSignal(false)
+  const [batchSelected, setBatchSelected] = createSignal<Set<string>>(new Set())
+  const [batchDeleting, setBatchDeleting] = createSignal(false)
+
+  function toggleBatchSelect(id: string) {
+    const s = new Set(batchSelected())
+    if (s.has(id)) s.delete(id); else s.add(id)
+    setBatchSelected(s)
+  }
+
+  function toggleSelectAll() {
+    const all = sortedReports()
+    if (batchSelected().size === all.length) {
+      setBatchSelected(new Set<string>())
+    } else {
+      setBatchSelected(new Set<string>(all.map(r => r.id)))
+    }
+  }
+
+  async function handleBatchDelete() {
+    const ids = Array.from(batchSelected())
+    if (ids.length === 0) return
+    setBatchDeleting(true)
+    try {
+      let deleted = 0
+      for (const id of ids) {
+        await api.reports.delete(id)
+        deleted++
+      }
+      toast('success', `已删除 ${deleted} 份报告`)
+      setBatchSelected(new Set<string>())
+      setBatchMode(false)
+      refetch()
+    } catch (err: any) {
+      toast('error', err.message || '批量删除失败')
+    } finally {
+      setBatchDeleting(false)
+    }
+  }
+
+  function handleBatchExportCSV() {
+    const ids = batchSelected()
+    const selected = sortedReports().filter(r => ids.has(r.id))
+    const p2 = patient()
+    if (p2 && selected.length > 0) exportAllReportsCSV(selected, p2.name)
+  }
 
   const sortedReports = () => {
     const list = reports() ?? []
@@ -687,11 +736,56 @@ export default function PatientDetail() {
               <div class="flex items-center justify-between mb-3">
                 <h2 class="section-title">检查报告</h2>
                 <Show when={sortedReports().length > 0}>
-                  <Button variant="ghost" size="sm" onClick={() => { const p2 = patient(); if (p2) exportAllReportsCSV(sortedReports(), p2.name) }}>
-                    导出CSV
-                  </Button>
+                  <div class="flex gap-1">
+                    <Button variant="ghost" size="sm" onClick={() => { const p2 = patient(); if (p2) exportAllReportsCSV(sortedReports(), p2.name) }}>
+                      导出CSV
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { const p2 = patient(); if (p2) exportAllReportsPDF(sortedReports(), p2) }}>
+                      导出PDF
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => { setBatchMode(!batchMode()); setBatchSelected(new Set<string>()) }}>
+                      {batchMode() ? '取消多选' : '多选'}
+                    </Button>
+                  </div>
                 </Show>
               </div>
+
+              {/* Batch action bar */}
+              <Show when={batchMode() && sortedReports().length > 0}>
+                <div class="flex items-center gap-3 mb-3 px-3 py-2 rounded-xl bg-surface-secondary">
+                  <button
+                    type="button"
+                    class="text-xs text-accent hover:underline cursor-pointer"
+                    onClick={toggleSelectAll}
+                  >
+                    {batchSelected().size === sortedReports().length ? '取消全选' : '全选'}
+                  </button>
+                  <span class="text-xs text-content-secondary">已选 {batchSelected().size} 项</span>
+                  <div class="ml-auto flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={batchSelected().size === 0}
+                      onClick={handleBatchExportCSV}
+                    >
+                      导出选中
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      disabled={batchSelected().size === 0}
+                      loading={batchDeleting()}
+                      onClick={() => {
+                        if (confirm(`确认删除选中的 ${batchSelected().size} 份报告？此操作不可恢复。`)) {
+                          handleBatchDelete()
+                        }
+                      }}
+                    >
+                      删除选中
+                    </Button>
+                  </div>
+                </div>
+              </Show>
 
               {/* Summary stats bar */}
               <Show when={!reports.loading && sortedReports().length > 0}>
@@ -738,48 +832,82 @@ export default function PatientDetail() {
                     <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
                       <For each={pagedReports()}>
                         {(report) => (
-                          <A
-                            href={`/reports/${report.id}`}
-                            class="block no-underline group"
-                          >
-                            <Card variant="outlined" class="h-full hover:border-accent hover:-translate-y-0.5 hover:shadow-md transition-all cursor-pointer">
-                              <CardBody class="p-3 flex flex-col gap-1">
-                                <div class="flex items-start justify-between gap-2">
-                                  <h3 class="text-sm font-semibold text-content truncate min-w-0">{report.report_type}</h3>
-                                  <span class="meta-text shrink-0">{report.report_date}</span>
-                                </div>
-                                <Show when={report.hospital}>
-                                  <div class="flex items-center gap-1 text-xs text-content-tertiary">
-                                    <svg class="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                                      <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v-5m-4 0h4" />
-                                    </svg>
-                                    <span class="truncate">{report.hospital}</span>
+                          <Show when={batchMode()} fallback={
+                            <A
+                              href={`/reports/${report.id}`}
+                              class="block no-underline group"
+                            >
+                              <Card variant="outlined" class="h-full hover:border-accent hover:-translate-y-0.5 hover:shadow-md transition-all cursor-pointer">
+                                <CardBody class="p-3 flex flex-col gap-1">
+                                  <div class="flex items-start justify-between gap-2">
+                                    <h3 class="text-sm font-semibold text-content truncate min-w-0">{report.report_type}</h3>
+                                    <span class="meta-text shrink-0">{report.report_date}</span>
                                   </div>
-                                </Show>
-                                <Show when={report.sample_date && report.sample_date !== report.report_date}>
-                                  <div class="flex items-center gap-1.5 text-xs text-content-tertiary">
-                                    <span>采样 {report.sample_date}</span>
+                                  <Show when={report.hospital}>
+                                    <div class="flex items-center gap-1 text-xs text-content-tertiary">
+                                      <svg class="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v-5m-4 0h4" />
+                                      </svg>
+                                      <span class="truncate">{report.hospital}</span>
+                                    </div>
+                                  </Show>
+                                  <Show when={report.sample_date && report.sample_date !== report.report_date}>
+                                    <div class="flex items-center gap-1.5 text-xs text-content-tertiary">
+                                      <span>采样 {report.sample_date}</span>
+                                    </div>
+                                  </Show>
+                                  <Show when={report.item_count > 0}>
+                                    <div class="flex items-center gap-2 text-xs text-content-tertiary">
+                                      <span>{report.item_count} 项检验</span>
+                                      <Show when={report.abnormal_count > 0}>
+                                        <Badge variant="error">{report.abnormal_count} 项异常</Badge>
+                                      </Show>
+                                    </div>
+                                  </Show>
+                                  <Show when={report.abnormal_names && report.abnormal_names.length > 0}>
+                                    <div class="text-xs text-error truncate">
+                                      {report.abnormal_names.slice(0, 3).join('、')}
+                                      <Show when={report.abnormal_names.length > 3}>
+                                        <span class="text-content-tertiary"> 等{report.abnormal_names.length}项</span>
+                                      </Show>
+                                    </div>
+                                  </Show>
+                                </CardBody>
+                              </Card>
+                            </A>
+                          }>
+                            {/* Batch mode card with checkbox */}
+                            <div
+                              class="block cursor-pointer"
+                              onClick={() => toggleBatchSelect(report.id)}
+                            >
+                              <Card variant="outlined" class={cn('h-full transition-all', batchSelected().has(report.id) && 'border-accent bg-accent/5')}>
+                                <CardBody class="p-3 flex flex-col gap-1">
+                                  <div class="flex items-start justify-between gap-2">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                      <input
+                                        type="checkbox"
+                                        checked={batchSelected().has(report.id)}
+                                        class="accent-[var(--color-accent)] w-4 h-4 shrink-0 cursor-pointer"
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={() => toggleBatchSelect(report.id)}
+                                      />
+                                      <h3 class="text-sm font-semibold text-content truncate min-w-0">{report.report_type}</h3>
+                                    </div>
+                                    <span class="meta-text shrink-0">{report.report_date}</span>
                                   </div>
-                                </Show>
-                                <Show when={report.item_count > 0}>
-                                  <div class="flex items-center gap-2 text-xs text-content-tertiary">
-                                    <span>{report.item_count} 项检验</span>
-                                    <Show when={report.abnormal_count > 0}>
-                                      <Badge variant="error">{report.abnormal_count} 项异常</Badge>
-                                    </Show>
-                                  </div>
-                                </Show>
-                                <Show when={report.abnormal_names && report.abnormal_names.length > 0}>
-                                  <div class="text-xs text-error truncate">
-                                    {report.abnormal_names.slice(0, 3).join('、')}
-                                    <Show when={report.abnormal_names.length > 3}>
-                                      <span class="text-content-tertiary"> 等{report.abnormal_names.length}项</span>
-                                    </Show>
-                                  </div>
-                                </Show>
-                              </CardBody>
-                            </Card>
-                          </A>
+                                  <Show when={report.item_count > 0}>
+                                    <div class="flex items-center gap-2 text-xs text-content-tertiary">
+                                      <span>{report.item_count} 项检验</span>
+                                      <Show when={report.abnormal_count > 0}>
+                                        <Badge variant="error">{report.abnormal_count} 项异常</Badge>
+                                      </Show>
+                                    </div>
+                                  </Show>
+                                </CardBody>
+                              </Card>
+                            </div>
+                          </Show>
                         )}
                       </For>
                     </div>

@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod audit_handler;
+pub mod backup;
 pub mod expense;
 pub mod health_assessment;
 pub mod interpret;

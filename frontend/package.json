@@ -12,6 +12,8 @@
     "@solidjs/router": "^0.15.4",
     "@tailwindcss/vite": "^4.2.0",
     "clsx": "^2.1.1",
+    "jspdf": "^4.2.0",
+    "jspdf-autotable": "^5.0.7",
     "solid-js": "^1.9.10",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.0",

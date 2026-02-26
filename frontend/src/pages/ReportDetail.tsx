@@ -11,6 +11,7 @@ import { api } from '@/api/client'
 import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus } from '@/api/types'
 import { LlmInterpret } from '@/components/LlmInterpret'
 import { exportReportCSV } from '@/lib/export'
+import { exportReportPDF } from '@/lib/export-pdf'
 
 export default function ReportDetail() {
   const params = useParams<{ id: string }>()
@@ -322,6 +323,9 @@ export default function ReportDetail() {
                 <div class="flex items-center gap-2">
                   <Button variant="outline" size="sm" onClick={() => { const rr = report(); if (rr) exportReportCSV(rr) }}>
                     导出CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => { const rr = report(); if (rr) exportReportPDF(rr, patient() ?? undefined) }}>
+                    导出PDF
                   </Button>
                   <Button variant="outline" size="sm" onClick={openEditModal}>
                     编辑

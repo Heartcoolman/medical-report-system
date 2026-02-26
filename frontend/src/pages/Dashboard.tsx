@@ -1,7 +1,7 @@
-import { createSignal, createResource, Show, For, onCleanup } from 'solid-js'
+import { createSignal, createResource, createMemo, Show, For, onCleanup } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
 import { api } from '@/api/client'
-import type { PatientWithStats } from '@/api/types'
+import type { PatientWithStats, CriticalAlert } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { Button, Card, CardBody, Input, Pagination, Skeleton, Empty, Badge, SearchBar, FloatingActionButton } from '@/components'
 import { currentUser } from '@/stores/auth'
@@ -27,6 +27,21 @@ export default function Dashboard() {
     () => ({ search: debouncedSearch(), page: page() }),
     (params) => api.patients.list({ search: params.search || undefined, page: params.page, page_size: 12 }),
   )
+
+  const [criticalAlerts] = createResource(() => api.stats.criticalAlerts().catch(() => [] as CriticalAlert[]))
+  const [alertsDismissed, setAlertsDismissed] = createSignal(false)
+
+  const groupedAlerts = createMemo(() => {
+    const alerts = criticalAlerts() ?? []
+    const map = new Map<string, { patient_id: string; patient_name: string; items: CriticalAlert[] }>()
+    for (const a of alerts) {
+      if (!map.has(a.patient_id)) {
+        map.set(a.patient_id, { patient_id: a.patient_id, patient_name: a.patient_name, items: [] })
+      }
+      map.get(a.patient_id)!.items.push(a)
+    }
+    return Array.from(map.values())
+  })
 
   return (
     <div class="page-shell space-y-6">
@@ -58,6 +73,64 @@ export default function Dashboard() {
           </A>
         </div>
       </div>
+
+      {/* Critical Alerts Banner */}
+      <Show when={!alertsDismissed() && groupedAlerts().length > 0}>
+        <div class="rounded-2xl bg-error/5 border border-error/20 p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-3 min-w-0">
+              <div class="shrink-0 w-8 h-8 rounded-full bg-error/10 flex items-center justify-center mt-0.5">
+                <svg class="w-4.5 h-4.5 text-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+              </div>
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-error">
+                  危急值告警 — {criticalAlerts()!.length} 项危急异常
+                </p>
+                <div class="mt-2 flex flex-col gap-1.5">
+                  <For each={groupedAlerts()}>
+                    {(group) => (
+                      <div class="text-sm">
+                        <A href={`/patients/${group.patient_id}`} class="font-medium text-error hover:underline">
+                          {group.patient_name}
+                        </A>
+                        <span class="text-content-secondary">
+                          {' — '}
+                          <For each={group.items}>
+                            {(item, i) => (
+                              <>
+                                <Show when={i() > 0}><span>、</span></Show>
+                                <A
+                                  href={`/reports/${item.report_id}`}
+                                  class="text-error/80 hover:text-error hover:underline"
+                                >
+                                  {item.item_name} {item.value}{item.unit}
+                                  {item.status === 'critical_high' ? ' ↑↑' : ' ↓↓'}
+                                </A>
+                              </>
+                            )}
+                          </For>
+                        </span>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="shrink-0 p-1 rounded-lg text-content-tertiary hover:text-content transition-colors cursor-pointer"
+              onClick={() => setAlertsDismissed(true)}
+              aria-label="关闭告警"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </Show>
 
       {/* Search — PC uses Input, mobile uses SearchBar */}
       <div class="max-w-md hidden md:block">

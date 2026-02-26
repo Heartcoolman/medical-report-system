@@ -1,9 +1,10 @@
-import { createSignal, createResource, createMemo, Show, For } from 'solid-js'
+import { createSignal, createResource, createMemo, createEffect, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
 import { api } from '@/api/client'
 import type { TestItem } from '@/api/types'
 import { cn } from '@/lib/utils'
-import { Card, CardBody, Select, Spinner, Empty } from '@/components'
+import { Card, CardBody, Select, Spinner, Empty, Badge } from '@/components'
+import { LlmInterpret } from '@/components/LlmInterpret'
 
 const STATUS_COLORS: Record<string, string> = {
   critical_high: 'text-error font-bold',
@@ -22,6 +23,29 @@ export default function ReportCompare() {
 
   const [leftId, setLeftId] = createSignal('')
   const [rightId, setRightId] = createSignal('')
+  const [autoSelected, setAutoSelected] = createSignal(false)
+
+  // Auto-select the latest two same-type reports
+  createEffect(() => {
+    if (autoSelected()) return
+    const list = sortedReports()
+    if (list.length < 2) return
+    // Find first pair with same report_type
+    for (let i = 0; i < list.length - 1; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (list[i].report_type === list[j].report_type) {
+          setLeftId(list[j].id) // older one on left
+          setRightId(list[i].id) // newer one on right
+          setAutoSelected(true)
+          return
+        }
+      }
+    }
+    // Fallback: just pick the latest two
+    setLeftId(list[1].id)
+    setRightId(list[0].id)
+    setAutoSelected(true)
+  })
 
   const [leftReport] = createResource(
     () => leftId() || null,
@@ -32,6 +56,11 @@ export default function ReportCompare() {
     () => rightId() || null,
     (id) => id ? api.reports.get(id) : null,
   )
+
+  const sortedReports = createMemo(() => {
+    const list = reports() ?? []
+    return [...list].sort((a, b) => b.report_date.localeCompare(a.report_date))
+  })
 
   const comparedItems = createMemo(() => {
     const left = leftReport()
@@ -60,10 +89,24 @@ export default function ReportCompare() {
     }))
   })
 
-  const sortedReports = () => {
-    const list = reports() ?? []
-    return [...list].sort((a, b) => b.report_date.localeCompare(a.report_date))
-  }
+  const comparisonStats = createMemo(() => {
+    const items = comparedItems()
+    let increased = 0, decreased = 0, statusChanged = 0, total = items.length
+    for (const row of items) {
+      const lv = row.left ? parseFloat(row.left.value) : NaN
+      const rv = row.right ? parseFloat(row.right.value) : NaN
+      if (!isNaN(lv) && !isNaN(rv)) {
+        if (rv > lv) increased++
+        else if (rv < lv) decreased++
+      }
+      if (row.left && row.right && row.left.status !== row.right.status) statusChanged++
+    }
+    return { total, increased, decreased, statusChanged }
+  })
+
+  // AI interpret compare
+  const [interpretUrl, setInterpretUrl] = createSignal('')
+  const [showInterpret, setShowInterpret] = createSignal(false)
 
   return (
     <div class="page-shell">
@@ -174,9 +217,43 @@ export default function ReportCompare() {
             </CardBody>
           </Card>
 
-          <div class="mt-3 text-xs text-content-tertiary">
-            共 {comparedItems().length} 项对比 · 状态变化的项目已高亮
+          {/* Comparison summary */}
+          <div class="mt-3 flex flex-wrap items-center gap-3 text-xs">
+            <span class="text-content-tertiary">共 {comparisonStats().total} 项对比</span>
+            <Show when={comparisonStats().increased > 0}>
+              <Badge variant="error">↑ 升高 {comparisonStats().increased} 项</Badge>
+            </Show>
+            <Show when={comparisonStats().decreased > 0}>
+              <Badge variant="info">↓ 降低 {comparisonStats().decreased} 项</Badge>
+            </Show>
+            <Show when={comparisonStats().statusChanged > 0}>
+              <Badge variant="warning">状态变化 {comparisonStats().statusChanged} 项</Badge>
+            </Show>
+            <button
+              type="button"
+              class="ml-auto text-accent hover:underline cursor-pointer text-xs font-medium"
+              onClick={() => {
+                const l = leftReport(), r = rightReport()
+                if (!l || !r) return
+                setInterpretUrl(`/api/patients/${params.id}/interpret-multi?report_ids=${l.id},${r.id}`)
+                setShowInterpret(true)
+              }}
+            >
+              AI 解读对比
+            </button>
           </div>
+
+          {/* AI Interpret */}
+          <Show when={showInterpret() && interpretUrl()}>
+            <div class="mt-4">
+              <Card variant="elevated">
+                <CardBody class="p-4">
+                  <h3 class="text-sm font-semibold text-content mb-3">AI 对比解读</h3>
+                  <LlmInterpret url={interpretUrl()} />
+                </CardBody>
+              </Card>
+            </div>
+          </Show>
         </Show>
 
         <Show when={!leftId() || !rightId()}>

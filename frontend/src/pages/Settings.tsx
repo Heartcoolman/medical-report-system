@@ -1,6 +1,7 @@
 import { createSignal, onMount, Show } from 'solid-js'
 import { api } from '@/api/client'
-import { useToast, Button, Spinner } from '@/components'
+import { useToast, Button, Spinner, Modal } from '@/components'
+import { currentUser } from '@/stores/auth'
 
 export default function Settings() {
   const { toast } = useToast()
@@ -12,6 +13,39 @@ export default function Settings() {
   const [showLlm, setShowLlm] = createSignal(false)
   const [showInterpret, setShowInterpret] = createSignal(false)
   const [showSiliconflow, setShowSiliconflow] = createSignal(false)
+  const [backingUp, setBackingUp] = createSignal(false)
+  const [restoring, setRestoring] = createSignal(false)
+  const [showRestoreModal, setShowRestoreModal] = createSignal(false)
+  const [restoreFile, setRestoreFile] = createSignal<File | null>(null)
+
+  const handleBackup = async () => {
+    setBackingUp(true)
+    try {
+      await api.admin.downloadBackup()
+      toast('success', '备份下载已开始')
+    } catch (err: any) {
+      toast('error', err.message || '备份失败')
+    } finally {
+      setBackingUp(false)
+    }
+  }
+
+  const handleRestore = async () => {
+    const file = restoreFile()
+    if (!file) return
+    setRestoring(true)
+    try {
+      await api.admin.restoreBackup(file)
+      toast('success', '数据库恢复成功，页面即将刷新')
+      setShowRestoreModal(false)
+      setRestoreFile(null)
+      setTimeout(() => window.location.reload(), 1500)
+    } catch (err: any) {
+      toast('error', err.message || '恢复失败')
+    } finally {
+      setRestoring(false)
+    }
+  }
 
   onMount(async () => {
     try {
@@ -155,8 +189,96 @@ export default function Settings() {
               </Button>
             </div>
           </div>
+
+          {/* Admin: Backup & Restore */}
+          <Show when={currentUser()?.role === 'admin'}>
+            <div class="bg-surface-elevated rounded-2xl shadow-lg border border-border/40 p-6 mt-6">
+              <h2 class="text-base font-semibold text-content mb-1">数据管理</h2>
+              <p class="text-sm text-content-secondary mb-5">
+                管理员专属：备份和恢复系统数据库
+              </p>
+
+              <div class="flex flex-col gap-3">
+                <Button
+                  variant="secondary"
+                  fullWidth
+                  loading={backingUp()}
+                  onClick={handleBackup}
+                >
+                  <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  下载数据库备份
+                </Button>
+
+                <div>
+                  <input
+                    type="file"
+                    accept=".db,.sqlite,.sqlite3"
+                    class="hidden"
+                    id="restore-file"
+                    onChange={(e) => {
+                      const file = e.currentTarget.files?.[0]
+                      if (file) {
+                        setRestoreFile(file)
+                        setShowRestoreModal(true)
+                      }
+                      e.currentTarget.value = ''
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    fullWidth
+                    onClick={() => document.getElementById('restore-file')?.click()}
+                  >
+                    <svg class="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    从备份恢复数据
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Show>
         </Show>
       </div>
+
+      {/* Restore Confirmation Modal */}
+      <Modal
+        open={showRestoreModal()}
+        onClose={() => { setShowRestoreModal(false); setRestoreFile(null) }}
+        title="确认恢复数据"
+      >
+        <div class="space-y-4">
+          <div class="p-3 rounded-xl bg-warning-light border border-warning/20">
+            <p class="text-sm text-warning font-medium">警告：此操作将覆盖当前所有数据！</p>
+            <p class="text-xs text-content-secondary mt-1">系统会在恢复前自动保存当前数据的备份副本。</p>
+          </div>
+          <Show when={restoreFile()}>
+            <p class="text-sm text-content-secondary">
+              文件：<span class="font-medium text-content">{restoreFile()!.name}</span>
+              （{(restoreFile()!.size / 1024).toFixed(1)} KB）
+            </p>
+          </Show>
+          <div class="flex gap-3">
+            <Button
+              variant="outline"
+              class="flex-1"
+              onClick={() => { setShowRestoreModal(false); setRestoreFile(null) }}
+            >
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              class="flex-1"
+              loading={restoring()}
+              onClick={handleRestore}
+            >
+              确认恢复
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

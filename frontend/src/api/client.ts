@@ -38,6 +38,7 @@ import type {
   DetectedDrug,
   TimelineEvent,
   UserInfo,
+  CriticalAlert,
 } from './types';
 
 const TOKEN_KEY = 'auth_token'
@@ -364,6 +365,37 @@ export const api = {
     },
     deleteUser(userId: string) {
       return request<void>(`/api/admin/users/${userId}`, { method: 'DELETE' });
+    },
+    async downloadBackup() {
+      const token = localStorage.getItem(TOKEN_KEY)
+      const res = await fetch('/api/admin/backup', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({ message: `备份失败: ${res.status}` }))
+        throw new Error(json.message || `备份失败: ${res.status}`)
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get('content-disposition') || ''
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      const filename = match?.[1] || `yiliao_backup_${new Date().toISOString().slice(0, 10)}.db`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+    },
+    async restoreBackup(file: File) {
+      const form = new FormData()
+      form.append('file', file)
+      return request<void>('/api/admin/restore', { method: 'POST', body: form }, 120000)
+    },
+  },
+
+  stats: {
+    criticalAlerts() {
+      return request<CriticalAlert[]>('/api/stats/critical-alerts');
     },
   },
 };
