@@ -73,7 +73,7 @@ export default function PatientDetail() {
 
   // Temperature measurement timer
   const [showTimerModal, setShowTimerModal] = createSignal(false)
-  const [timerSeconds, setTimerSeconds] = createSignal(10) // 10 seconds for testing
+  const [timerSeconds, setTimerSeconds] = createSignal(300) // 5 minutes
   const [timerRunning, setTimerRunning] = createSignal(false)
   let timerInterval: number | undefined
   let alertInterval: number | undefined
@@ -86,7 +86,7 @@ export default function PatientDetail() {
     return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
   })
 
-  const timerProgress = createMemo(() => 1 - timerSeconds() / 10)
+  const timerProgress = createMemo(() => 1 - timerSeconds() / 300)
 
   function ensureAudioCtx() {
     if (!audioCtx) audioCtx = new AudioContext()
@@ -132,7 +132,7 @@ export default function PatientDetail() {
   function startTimer() {
     // Create AudioContext during user gesture so it won't be suspended later
     ensureAudioCtx()
-    setTimerSeconds(10)
+    setTimerSeconds(300)
     setTimerRunning(true)
     setShowTimerModal(true)
     timerInterval = window.setInterval(() => {
@@ -157,7 +157,7 @@ export default function PatientDetail() {
     stopAlertLoop()
     setTimerRunning(false)
     setShowTimerModal(false)
-    setTimerSeconds(10)
+    setTimerSeconds(300)
   }
 
   function dismissTimer() {
