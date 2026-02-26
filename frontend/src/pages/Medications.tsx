@@ -102,7 +102,7 @@ export default function Medications() {
 
   return (
     <div class="page-shell">
-      <div class="max-w-2xl mx-auto">
+      <div class="max-w-5xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <h1 class="page-title">用药管理</h1>
           <Button variant="outline" size="sm" onClick={openAdd}>手动添加</Button>

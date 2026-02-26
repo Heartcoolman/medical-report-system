@@ -17,6 +17,33 @@ const STATUS_COLORS: Record<string, string> = {
   '需就医': 'text-error',
 }
 
+const CACHE_KEY_PREFIX = 'health_assessment_cache_'
+
+interface CachedAssessment {
+  data: HealthAssessment
+  timestamp: number
+}
+
+function loadCached(patientId: string): CachedAssessment | null {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY_PREFIX + patientId)
+    if (!raw) return null
+    return JSON.parse(raw) as CachedAssessment
+  } catch { return null }
+}
+
+function saveCache(patientId: string, data: HealthAssessment) {
+  try {
+    const entry: CachedAssessment = { data, timestamp: Date.now() }
+    localStorage.setItem(CACHE_KEY_PREFIX + patientId, JSON.stringify(entry))
+  } catch {}
+}
+
+function formatCacheTime(ts: number): string {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+}
+
 export default function HealthAssessmentPage() {
   const params = useParams<{ id: string }>()
   const { toast } = useToast()
@@ -25,11 +52,20 @@ export default function HealthAssessmentPage() {
   const [loading, setLoading] = createSignal(false)
   const [assessment, setAssessment] = createSignal<HealthAssessment | null>(null)
   const [error, setError] = createSignal('')
+  const [cachedTime, setCachedTime] = createSignal<number | null>(null)
+
+  // Load cached result on mount
+  const cached = loadCached(params.id)
+  if (cached) {
+    setAssessment(cached.data)
+    setCachedTime(cached.timestamp)
+  }
 
   async function startAssessment() {
     setLoading(true)
     setError('')
     setAssessment(null)
+    setCachedTime(null)
     try {
       const token = localStorage.getItem('auth_token')
       const resp = await fetch(`/api/patients/${params.id}/health-assessment`, {
@@ -67,6 +103,8 @@ export default function HealthAssessmentPage() {
           try {
             const parsed = JSON.parse(data) as HealthAssessment
             setAssessment(parsed)
+            saveCache(params.id, parsed)
+            setCachedTime(Date.now())
           } catch {}
         }
       }
@@ -196,6 +234,10 @@ export default function HealthAssessmentPage() {
               {/* Disclaimer */}
               <Show when={a().disclaimer}>
                 <p class="text-xs text-content-tertiary text-center py-2">{a().disclaimer}</p>
+              </Show>
+
+              <Show when={cachedTime()}>
+                <p class="text-xs text-content-tertiary text-center">评估生成于 {formatCacheTime(cachedTime()!)}</p>
               </Show>
 
               <div class="text-center">
