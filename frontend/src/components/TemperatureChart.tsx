@@ -488,7 +488,7 @@ export function TemperatureChart(props: TemperatureChartProps) {
 
         {/* Per-location lines and points */}
         <For each={locationSeries()}>
-          {(series, si) => {
+          {(series, _si) => {
             const hidden = () => hiddenLocations().has(series.location)
             return (
               <Show when={!hidden()}>
