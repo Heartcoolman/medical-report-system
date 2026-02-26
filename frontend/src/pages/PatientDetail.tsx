@@ -136,16 +136,19 @@ export default function PatientDetail() {
     setTimerRunning(true)
     setShowTimerModal(true)
     timerInterval = window.setInterval(() => {
-      setTimerSeconds(prev => {
-        if (prev <= 1) {
-          clearInterval(timerInterval)
-          setTimerRunning(false)
+      const cur = timerSeconds()
+      if (cur <= 1) {
+        clearInterval(timerInterval)
+        setTimerSeconds(0)
+        setTimerRunning(false)
+        // Delay alert start to escape SolidJS batching
+        setTimeout(() => {
           startAlertLoop()
           toast('success', '5分钟到！请测量体温')
-          return 0
-        }
-        return prev - 1
-      })
+        }, 50)
+      } else {
+        setTimerSeconds(cur - 1)
+      }
     }, 1000)
   }
 
@@ -957,7 +960,7 @@ export default function PatientDetail() {
             {/* Temperature Measurement Timer Modal */}
             <Modal
               open={showTimerModal()}
-              onClose={() => timerRunning() ? cancelTimer() : dismissTimer()}
+              onClose={() => { if (timerRunning()) cancelTimer() }}
               title="体温测量计时"
               size="sm"
               footer={
