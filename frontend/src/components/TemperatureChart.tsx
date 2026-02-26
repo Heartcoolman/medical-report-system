@@ -7,8 +7,28 @@ const CHART_HEIGHT = 240
 const Y_MIN = 35
 const Y_MAX = 42
 const FEVER_LINE = 37.3
-const TOOLTIP_WIDTH = 182
+const TOOLTIP_WIDTH = 200
 const SMOOTH_CONTROL_RATIO = 0.35
+
+// Location color palette
+const LOCATION_COLORS: Record<string, string> = {
+  '左腋下': '#3b82f6', // blue
+  '右腋下': '#10b981', // green
+  '口腔':   '#f59e0b', // amber
+  '耳温':   '#8b5cf6', // purple
+  '额温':   '#06b6d4', // cyan
+  '肛温':   '#ef4444', // red
+  '':       'var(--accent)',
+}
+const FALLBACK_COLORS = ['#ec4899', '#6366f1', '#14b8a6', '#f97316', '#a855f7', '#64748b']
+
+function getLocationColor(loc: string, idx: number): string {
+  return LOCATION_COLORS[loc] ?? FALLBACK_COLORS[idx % FALLBACK_COLORS.length]
+}
+
+function locationLabel(loc: string): string {
+  return loc || '未标注'
+}
 
 // --- Helpers ---
 
@@ -42,6 +62,13 @@ function parseRecordedAt(recorded_at: string): number {
   return new Date(recorded_at.replace(' ', 'T') + ':00').getTime()
 }
 
+interface LocationSeries {
+  location: string
+  color: string
+  records: TemperatureRecord[]
+  indices: number[] // indices into original data array
+}
+
 // --- Component ---
 
 export interface TemperatureChartProps {
@@ -52,6 +79,7 @@ export interface TemperatureChartProps {
 export function TemperatureChart(props: TemperatureChartProps) {
   const [hoveredIndex, setHoveredIndex] = createSignal<number | null>(null)
   const [chartWidth, setChartWidth] = createSignal(500)
+  const [hiddenLocations, setHiddenLocations] = createSignal<Set<string>>(new Set())
   let containerRef: HTMLDivElement | undefined
   let hideTimer: number | undefined
 
@@ -76,23 +104,57 @@ export function TemperatureChart(props: TemperatureChartProps) {
     onCleanup(() => observer.disconnect())
   })
 
+  // Group data by location
+  const locationSeries = createMemo((): LocationSeries[] => {
+    const map = new Map<string, { records: TemperatureRecord[]; indices: number[] }>()
+    props.data.forEach((r, i) => {
+      const loc = r.location || ''
+      if (!map.has(loc)) map.set(loc, { records: [], indices: [] })
+      const entry = map.get(loc)!
+      entry.records.push(r)
+      entry.indices.push(i)
+    })
+    const result: LocationSeries[] = []
+    let ci = 0
+    for (const [loc, { records, indices }] of map) {
+      result.push({ location: loc, color: getLocationColor(loc, ci), records, indices })
+      ci++
+    }
+    return result
+  })
+
+  const hasMultipleLocations = createMemo(() => locationSeries().length > 1)
+
+  // Visible data (filtered by hiddenLocations)
+  const visibleData = createMemo(() => {
+    const hidden = hiddenLocations()
+    if (hidden.size === 0) return props.data
+    return props.data.filter(r => !hidden.has(r.location || ''))
+  })
+
+  function toggleLocation(loc: string) {
+    const s = new Set(hiddenLocations())
+    if (s.has(loc)) s.delete(loc); else s.add(loc)
+    setHiddenLocations(s)
+  }
+
   const effectiveWidth = () => Math.max(chartWidth(), 200)
   const plotWidth = () => Math.max(effectiveWidth() - CHART_PADDING.left - CHART_PADDING.right, 50)
   const plotHeight = () => CHART_HEIGHT - CHART_PADDING.top - CHART_PADDING.bottom
 
-  // Compute nice y range including all data
+  // Compute nice y range including all visible data
   const yRange = createMemo(() => {
     let min = Y_MIN
     let max = Y_MAX
-    for (const r of props.data) {
+    for (const r of visibleData()) {
       if (r.value < min) min = Math.floor(r.value)
       if (r.value > max) max = Math.ceil(r.value)
     }
     return { min, max }
   })
 
-  // Time-proportional x scale
-  const MIN_TIME_SPAN = 24 * 60 * 60 * 1000 // 最小显示跨度 24 小时
+  // Time-proportional x scale based on all data (not just visible)
+  const MIN_TIME_SPAN = 24 * 60 * 60 * 1000
   const timeRange = createMemo(() => {
     if (props.data.length <= 1) return null
     const times = props.data.map(r => parseRecordedAt(r.recorded_at))
@@ -107,10 +169,17 @@ export function TemperatureChart(props: TemperatureChartProps) {
     return { min, max }
   })
 
-  const xScale = (i: number) => {
+  const xScaleByIndex = (i: number) => {
     const tr = timeRange()
     if (!tr || tr.max === tr.min) return CHART_PADDING.left + plotWidth() / 2
     const t = parseRecordedAt(props.data[i].recorded_at)
+    return CHART_PADDING.left + ((t - tr.min) / (tr.max - tr.min)) * plotWidth()
+  }
+
+  const xScaleByTime = (recorded_at: string) => {
+    const tr = timeRange()
+    if (!tr || tr.max === tr.min) return CHART_PADDING.left + plotWidth() / 2
+    const t = parseRecordedAt(recorded_at)
     return CHART_PADDING.left + ((t - tr.min) / (tr.max - tr.min)) * plotWidth()
   }
 
@@ -120,11 +189,44 @@ export function TemperatureChart(props: TemperatureChartProps) {
     return CHART_PADDING.top + plotHeight() * (1 - ratio)
   }
 
-  const points = createMemo(() => {
-    return props.data.map((record, i) => ({
-      x: xScale(i),
-      y: yScale(record.value),
-    }))
+  // Build smooth path for a series of records
+  function buildLinePath(records: TemperatureRecord[]): string {
+    if (records.length === 0) return ''
+    const pts = records.map(r => ({ x: xScaleByTime(r.recorded_at), y: yScale(r.value) }))
+    if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`
+    let path = `M ${pts[0].x} ${pts[0].y}`
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1]
+      const curr = pts[i]
+      const dx = curr.x - prev.x
+      const cp1X = prev.x + dx * SMOOTH_CONTROL_RATIO
+      const cp2X = curr.x - dx * SMOOTH_CONTROL_RATIO
+      path += ` C ${cp1X} ${prev.y} ${cp2X} ${curr.y} ${curr.x} ${curr.y}`
+    }
+    return path
+  }
+
+  // Single-series area path (only used when single location)
+  const areaPath = createMemo(() => {
+    if (hasMultipleLocations()) return ''
+    const records = visibleData()
+    if (records.length === 0) return ''
+    const pts = records.map(r => ({ x: xScaleByTime(r.recorded_at), y: yScale(r.value) }))
+    const baseY = CHART_PADDING.top + plotHeight()
+    if (pts.length === 1) {
+      return `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y} L ${pts[0].x} ${baseY} Z`
+    }
+    let path = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1]
+      const curr = pts[i]
+      const dx = curr.x - prev.x
+      const cp1X = prev.x + dx * SMOOTH_CONTROL_RATIO
+      const cp2X = curr.x - dx * SMOOTH_CONTROL_RATIO
+      path += ` C ${cp1X} ${prev.y} ${cp2X} ${curr.y} ${curr.x} ${curr.y}`
+    }
+    path += ` L ${pts[pts.length - 1].x} ${baseY} Z`
+    return path
   })
 
   // Grid lines: every 1°C
@@ -140,54 +242,12 @@ export function TemperatureChart(props: TemperatureChartProps) {
   // Fever reference band: 37.3°C line
   const feverLineY = createMemo(() => yScale(FEVER_LINE))
 
-  const linePath = createMemo(() => {
-    const pts = points()
-    if (pts.length === 0) return ''
-    if (pts.length === 1) {
-      const p = pts[0]
-      return `M ${p.x} ${p.y}`
-    }
-    let path = `M ${pts[0].x} ${pts[0].y}`
-    for (let i = 1; i < pts.length; i++) {
-      const prev = pts[i - 1]
-      const curr = pts[i]
-      const dx = curr.x - prev.x
-      const cp1X = prev.x + dx * SMOOTH_CONTROL_RATIO
-      const cp2X = curr.x - dx * SMOOTH_CONTROL_RATIO
-      path += ` C ${cp1X} ${prev.y} ${cp2X} ${curr.y} ${curr.x} ${curr.y}`
-    }
-    return path
-  })
-
-  const areaPath = createMemo(() => {
-    const pts = points()
-    if (pts.length === 0) return ''
-    const baseY = CHART_PADDING.top + plotHeight()
-    if (pts.length === 1) {
-      const p = pts[0]
-      return `M ${p.x} ${baseY} L ${p.x} ${p.y} L ${p.x} ${baseY} Z`
-    }
-
-    let path = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`
-    for (let i = 1; i < pts.length; i++) {
-      const prev = pts[i - 1]
-      const curr = pts[i]
-      const dx = curr.x - prev.x
-      const cp1X = prev.x + dx * SMOOTH_CONTROL_RATIO
-      const cp2X = curr.x - dx * SMOOTH_CONTROL_RATIO
-      path += ` C ${cp1X} ${prev.y} ${cp2X} ${curr.y} ${curr.x} ${curr.y}`
-    }
-    path += ` L ${pts[pts.length - 1].x} ${baseY} Z`
-    return path
-  })
-
-  // X-axis labels — show date+time, skip labels if too dense
+  // X-axis labels
   const dateLabels = createMemo(() => {
     const all = props.data.map((r, i) => ({
-      x: xScale(i),
+      x: xScaleByIndex(i),
       label: formatDateTime(r.recorded_at),
     }))
-    // Skip labels when they would overlap; labels are rotated -30° so horizontal footprint ~50px
     if (all.length <= 1) return all
     const minSpacing = 50
     const totalWidth = plotWidth()
@@ -197,6 +257,34 @@ export function TemperatureChart(props: TemperatureChartProps) {
 
   return (
     <div class="relative" ref={containerRef}>
+      {/* Legend (only when multiple locations) */}
+      <Show when={hasMultipleLocations()}>
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <For each={locationSeries()}>
+            {(series) => {
+              const isHidden = () => hiddenLocations().has(series.location)
+              return (
+                <button
+                  class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer border"
+                  classList={{
+                    'border-border/50 bg-surface-secondary/50 text-content-tertiary line-through': isHidden(),
+                    'border-transparent bg-surface text-content shadow-sm': !isHidden(),
+                  }}
+                  onClick={() => toggleLocation(series.location)}
+                >
+                  <span
+                    class="w-2.5 h-2.5 rounded-full shrink-0"
+                    classList={{ 'opacity-30': isHidden() }}
+                    style={{ background: series.color }}
+                  />
+                  {locationLabel(series.location)} ({series.records.length})
+                </button>
+              )
+            }}
+          </For>
+        </div>
+      </Show>
+
       <svg
         viewBox={`0 0 ${effectiveWidth()} ${CHART_HEIGHT}`}
         class="w-full"
@@ -353,8 +441,8 @@ export function TemperatureChart(props: TemperatureChartProps) {
           )}
         </For>
 
-        {/* Temperature area under line */}
-        <Show when={areaPath() !== ''}>
+        {/* Single-series area (only when one location) */}
+        <Show when={!hasMultipleLocations() && areaPath() !== ''}>
           <path d={areaPath()} fill="url(#tempAreaGradient)" class="temp-area-anim" />
         </Show>
 
@@ -398,66 +486,69 @@ export function TemperatureChart(props: TemperatureChartProps) {
           )}
         </For>
 
-        {/* Data line */}
-        <Show when={props.data.length > 1}>
-          <path
-            d={linePath()}
-            fill="none"
-            stroke="url(#tempLineGradient)"
-            stroke-width="2.5"
-            stroke-linejoin="round"
-            stroke-linecap="round"
-            class="temp-line-anim"
-          />
-        </Show>
-        <Show when={props.data.length === 1}>
-          <line
-            x1={xScale(0) - 0.8}
-            y1={yScale(props.data[0].value) - 16}
-            x2={xScale(0) + 0.8}
-            y2={yScale(props.data[0].value) - 16}
-            stroke="url(#tempLineGradient)"
-            stroke-width="2.2"
-            stroke-linecap="round"
-          />
-        </Show>
+        {/* Per-location lines and points */}
+        <For each={locationSeries()}>
+          {(series, si) => {
+            const hidden = () => hiddenLocations().has(series.location)
+            return (
+              <Show when={!hidden()}>
+                {/* Line */}
+                <Show when={series.records.length > 1}>
+                  <path
+                    d={buildLinePath(series.records)}
+                    fill="none"
+                    stroke={hasMultipleLocations() ? series.color : 'url(#tempLineGradient)'}
+                    stroke-width="2.5"
+                    stroke-linejoin="round"
+                    stroke-linecap="round"
+                    stroke-opacity={hasMultipleLocations() ? '0.85' : '1'}
+                    class="temp-line-anim"
+                  />
+                </Show>
 
-        {/* Data points */}
-        <For each={props.data}>
-          {(record, i) => (
-            <g>
-              <circle
-                cx={xScale(i())}
-                cy={yScale(record.value)}
-                r={hoveredIndex() === i() ? 6.5 : 4.2}
-                fill={temperatureColor(record.value)}
-                stroke={hoveredIndex() === i() ? 'var(--surface)' : 'transparent'}
-                stroke-width={hoveredIndex() === i() ? '1.8' : '0'}
-                class="cursor-pointer temp-point-anim"
-                style={{ 'animation-delay': `${0.3 + i() * 0.08}s` }}
-                onMouseEnter={() => hoverIn(i())}
-                onMouseLeave={hoverOut}
-              />
-              <Show when={hoveredIndex() === i()}>
-                <circle
-                  cx={xScale(i())}
-                  cy={yScale(record.value)}
-                  r="10"
-                  fill="none"
-                  stroke={temperatureColor(record.value)}
-                  stroke-opacity="0.25"
-                  stroke-width="6"
-                />
+                {/* Data points */}
+                <For each={series.indices}>
+                  {(dataIdx, pi) => {
+                    const record = () => props.data[dataIdx]
+                    return (
+                      <g>
+                        <circle
+                          cx={xScaleByIndex(dataIdx)}
+                          cy={yScale(record().value)}
+                          r={hoveredIndex() === dataIdx ? 6.5 : 4.2}
+                          fill={hasMultipleLocations() ? series.color : temperatureColor(record().value)}
+                          stroke={hoveredIndex() === dataIdx ? 'var(--surface)' : 'transparent'}
+                          stroke-width={hoveredIndex() === dataIdx ? '1.8' : '0'}
+                          class="cursor-pointer temp-point-anim"
+                          style={{ 'animation-delay': `${0.3 + pi() * 0.08}s` }}
+                          onMouseEnter={() => hoverIn(dataIdx)}
+                          onMouseLeave={hoverOut}
+                        />
+                        <Show when={hoveredIndex() === dataIdx}>
+                          <circle
+                            cx={xScaleByIndex(dataIdx)}
+                            cy={yScale(record().value)}
+                            r="10"
+                            fill="none"
+                            stroke={hasMultipleLocations() ? series.color : temperatureColor(record().value)}
+                            stroke-opacity="0.25"
+                            stroke-width="6"
+                          />
+                        </Show>
+                      </g>
+                    )
+                  }}
+                </For>
               </Show>
-            </g>
-          )}
+            )
+          }}
         </For>
 
         {/* Crosshair */}
         <Show when={hoveredIndex() !== null}>
           {(_) => {
             const idx = () => hoveredIndex()!
-            const x = () => xScale(idx())
+            const x = () => xScaleByIndex(idx())
             const y = () => yScale(props.data[idx()].value)
             return (
               <>
@@ -492,15 +583,20 @@ export function TemperatureChart(props: TemperatureChartProps) {
         {(_) => {
           const idx = () => hoveredIndex()!
           const record = () => props.data[idx()]
-          const x = () => xScale(idx())
+          const x = () => xScaleByIndex(idx())
           const y = () => yScale(record().value)
+          const seriesColor = () => {
+            const loc = record().location || ''
+            const s = locationSeries().find(s => s.location === loc)
+            return s?.color ?? 'var(--accent)'
+          }
           const tooltipX = () => {
             const left = x() - TOOLTIP_WIDTH / 2
             const maxLeft = effectiveWidth() - TOOLTIP_WIDTH - 8
             return Math.min(Math.max(left, 8), maxLeft)
           }
           const isBelow = () => y() < 90
-          const tooltipY = () => isBelow() ? y() + 18 : y() - 108
+          const tooltipY = () => isBelow() ? y() + 18 : y() - 120
           return (
             <div
               class="absolute bg-surface-elevated/95 shadow-xl rounded-2xl border border-border/40 px-3.5 py-2.5 text-sm z-10"
@@ -519,7 +615,18 @@ export function TemperatureChart(props: TemperatureChartProps) {
               <Show when={!isBelow()}>
                 <div class="absolute -bottom-1.5 left-1/2 -translate-x-1/2 h-2.5 w-2.5 border-r border-b border-border bg-surface-elevated/95 rotate-45" />
               </Show>
-              <div class="text-content-secondary text-xs mb-1">{formatDateTime(record().recorded_at)}</div>
+              <div class="flex items-center gap-1.5 text-content-secondary text-xs mb-1">
+                <span>{formatDateTime(record().recorded_at)}</span>
+                <Show when={record().location}>
+                  <span
+                    class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium"
+                    style={{ background: `${seriesColor()}18`, color: seriesColor() }}
+                  >
+                    <span class="w-1.5 h-1.5 rounded-full" style={{ background: seriesColor() }} />
+                    {record().location}
+                  </span>
+                </Show>
+              </div>
               <div class="font-semibold text-content">
                 {record().value.toFixed(1)} ℃
                 <span

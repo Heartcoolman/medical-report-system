@@ -20,6 +20,7 @@ interface DailyAggregate {
   min: number
   max: number
   count: number
+  byLocation: { location: string; avg: number; min: number; max: number; count: number }[]
 }
 
 // --- Helpers ---
@@ -63,21 +64,37 @@ function last7Days(): string[] {
 }
 
 function aggregateByDay(data: TemperatureRecord[]): Map<string, DailyAggregate> {
-  const groups = new Map<string, number[]>()
+  const groups = new Map<string, TemperatureRecord[]>()
   for (const r of data) {
     const date = r.recorded_at.split(' ')[0]
     if (!groups.has(date)) groups.set(date, [])
-    groups.get(date)!.push(r.value)
+    groups.get(date)!.push(r)
   }
   const result = new Map<string, DailyAggregate>()
-  for (const [date, values] of groups) {
+  for (const [date, records] of groups) {
+    const values = records.map(r => r.value)
     const sum = values.reduce((a, b) => a + b, 0)
+    // Per-location breakdown
+    const locMap = new Map<string, number[]>()
+    for (const r of records) {
+      const loc = r.location || ''
+      if (!locMap.has(loc)) locMap.set(loc, [])
+      locMap.get(loc)!.push(r.value)
+    }
+    const byLocation = [...locMap.entries()].map(([location, vals]) => ({
+      location,
+      avg: vals.reduce((a, b) => a + b, 0) / vals.length,
+      min: Math.min(...vals),
+      max: Math.max(...vals),
+      count: vals.length,
+    }))
     result.set(date, {
       date,
       avg: sum / values.length,
       min: Math.min(...values),
       max: Math.max(...values),
       count: values.length,
+      byLocation,
     })
   }
   return result
@@ -543,6 +560,23 @@ export function TemperatureWeeklyChart(props: TemperatureWeeklyChartProps) {
                 <span>最低 {day().min.toFixed(1)}℃</span>
                 <span>{day().count} 次记录</span>
               </div>
+              <Show when={day().byLocation.length > 1}>
+                <div class="mt-1.5 pt-1.5 border-t border-border/30 space-y-1">
+                  <For each={day().byLocation}>
+                    {(loc) => (
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="text-content-secondary">{loc.location || '未标注'}</span>
+                        <span class="text-content font-medium">
+                          {loc.avg.toFixed(1)}℃
+                          <Show when={loc.count > 1}>
+                            <span class="text-content-tertiary ml-1">({loc.count}次)</span>
+                          </Show>
+                        </span>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
             </div>
           )
         }}

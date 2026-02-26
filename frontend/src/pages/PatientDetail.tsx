@@ -70,6 +70,7 @@ export default function PatientDetail() {
   const [tempTime, setTempTime] = createSignal('')
   const [tempValue, setTempValue] = createSignal('')
   const [tempNote, setTempNote] = createSignal('')
+  const [tempLocation, setTempLocation] = createSignal('左腋下')
   const [tempSubmitting, setTempSubmitting] = createSignal(false)
   const [tempViewMode, setTempViewMode] = createSignal<'day' | 'week'>('day')
 
@@ -339,6 +340,7 @@ export default function PatientDetail() {
       await api.temperatures.create(params.id, {
         recorded_at: `${tempDate()} ${tempTime()}`,
         value,
+        location: tempLocation(),
         note: tempNote(),
       })
       toast('success', '体温记录已添加')
@@ -1128,17 +1130,34 @@ export default function PatientDetail() {
                     />
                   </div>
                 </div>
-                <div>
-                  <label class="data-label mb-1 block">体温 (℃)</label>
-                  <Input
-                    type="number"
-                    placeholder="例如 36.5"
-                    value={tempValue()}
-                    onInput={(e) => setTempValue(e.currentTarget.value)}
-                    step="0.1"
-                    min="34"
-                    max="43"
-                  />
+                <div class="flex gap-2">
+                  <div class="flex-1">
+                    <label class="data-label mb-1 block">体温 (℃)</label>
+                    <Input
+                      type="number"
+                      placeholder="例如 36.5"
+                      value={tempValue()}
+                      onInput={(e) => setTempValue(e.currentTarget.value)}
+                      step="0.1"
+                      min="34"
+                      max="43"
+                    />
+                  </div>
+                  <div class="flex-1">
+                    <label class="data-label mb-1 block">测量部位</label>
+                    <select
+                      class="w-full h-9 px-3 rounded-lg border border-border bg-surface text-sm text-content focus:outline-none focus:ring-2 focus:ring-accent/30"
+                      value={tempLocation()}
+                      onChange={(e) => setTempLocation(e.currentTarget.value)}
+                    >
+                      <option value="左腋下">左腋下</option>
+                      <option value="右腋下">右腋下</option>
+                      <option value="口腔">口腔</option>
+                      <option value="耳温">耳温</option>
+                      <option value="额温">额温</option>
+                      <option value="肛温">肛温</option>
+                    </select>
+                  </div>
                 </div>
                 <div>
                   <label class="data-label mb-1 block">备注（可选）</label>

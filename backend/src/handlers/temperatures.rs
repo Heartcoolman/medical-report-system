@@ -29,6 +29,7 @@ pub async fn create_temperature(
         patient_id,
         recorded_at: req.recorded_at,
         value: req.value,
+        location: req.location,
         note: req.note,
         created_at: Utc::now().to_rfc3339(),
     };

@@ -198,6 +198,7 @@ export interface TemperatureRecord {
   patient_id: string;
   recorded_at: string;
   value: number;
+  location: string;
   note: string;
   created_at: string;
 }
@@ -205,6 +206,7 @@ export interface TemperatureRecord {
 export interface CreateTemperatureReq {
   recorded_at: string;
   value: number;
+  location?: string;
   note?: string;
 }
 

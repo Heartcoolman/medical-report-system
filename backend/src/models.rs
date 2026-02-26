@@ -155,6 +155,8 @@ pub struct TemperatureRecord {
     pub recorded_at: String,
     pub value: f64,
     #[serde(default)]
+    pub location: String,
+    #[serde(default)]
     pub note: String,
     pub created_at: String,
 }
@@ -163,6 +165,8 @@ pub struct TemperatureRecord {
 pub struct CreateTemperatureReq {
     pub recorded_at: String,
     pub value: f64,
+    #[serde(default)]
+    pub location: String,
     #[serde(default)]
     pub note: String,
 }

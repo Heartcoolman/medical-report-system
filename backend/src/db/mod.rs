@@ -196,6 +196,12 @@ impl Database {
             "#,
         )?;
 
+        // Migration: add location column to temperature_records
+        conn.execute_batch(
+            "ALTER TABLE temperature_records ADD COLUMN location TEXT NOT NULL DEFAULT ''",
+        )
+        .ok(); // ignore error if column already exists
+
         backfill_comparator_statuses(&conn)?;
 
         Ok(Self {
