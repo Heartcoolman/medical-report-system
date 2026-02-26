@@ -3,7 +3,7 @@ import { useParams } from '@solidjs/router'
 import { api } from '@/api/client'
 import type { Medication, DetectedDrug } from '@/api/types'
 import { cn } from '@/lib/utils'
-import { Button, Card, CardBody, Badge, Modal, Input, useToast, Spinner, Empty } from '@/components'
+import { Button, Card, CardBody, Badge, Modal, Input, useToast, Empty } from '@/components'
 
 export default function Medications() {
   const params = useParams<{ id: string }>()

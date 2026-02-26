@@ -19,3 +19,12 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build output
+static/
+
+# Database files
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
