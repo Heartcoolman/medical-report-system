@@ -172,6 +172,60 @@ impl Database {
         })
     }
 
+    pub fn list_detected_drugs(&self, patient_id: &str) -> Result<Vec<crate::models::DetectedDrug>, AppError> {
+        use std::collections::HashMap;
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT ei.name, ei.quantity, de.expense_date
+                 FROM expense_items ei
+                 JOIN daily_expenses de ON ei.expense_id = de.id
+                 WHERE de.patient_id = ?1 AND ei.category = 'drug'
+                 ORDER BY de.expense_date ASC",
+            )?;
+            let rows = stmt.query_map([patient_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+
+            let mut drug_map: HashMap<String, (Vec<String>, HashMap<String, usize>)> = HashMap::new();
+            for row in rows {
+                let (name, quantity, date) = row?;
+                let entry = drug_map.entry(name).or_insert_with(|| (Vec::new(), HashMap::new()));
+                if entry.0.last().map_or(true, |d| d != &date) {
+                    entry.0.push(date);
+                }
+                if !quantity.is_empty() {
+                    *entry.1.entry(quantity).or_insert(0) += 1;
+                }
+            }
+
+            let mut result: Vec<crate::models::DetectedDrug> = drug_map
+                .into_iter()
+                .map(|(name, (dates, qty_map))| {
+                    let typical_quantity = qty_map
+                        .into_iter()
+                        .max_by_key(|(_, count)| *count)
+                        .map(|(q, _)| q)
+                        .unwrap_or_default();
+                    crate::models::DetectedDrug {
+                        name,
+                        first_date: dates.first().cloned().unwrap_or_default(),
+                        last_date: dates.last().cloned().unwrap_or_default(),
+                        occurrence_count: dates.len(),
+                        typical_quantity,
+                        dates,
+                    }
+                })
+                .collect();
+
+            result.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count).then(b.last_date.cmp(&a.last_date)));
+            Ok(result)
+        })
+    }
+
     pub fn delete_expense(&self, id: &str) -> Result<(), AppError> {
         self.with_conn(|conn| {
             let exists: Option<String> = conn

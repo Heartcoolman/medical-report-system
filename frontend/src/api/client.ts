@@ -35,6 +35,7 @@ import type {
   Medication,
   CreateMedicationReq,
   UpdateMedicationReq,
+  DetectedDrug,
   TimelineEvent,
   UserInfo,
 } from './types';
@@ -328,6 +329,9 @@ export const api = {
   medications: {
     list(patientId: string) {
       return request<Medication[]>(`/api/patients/${patientId}/medications`);
+    },
+    detectedDrugs(patientId: string) {
+      return request<DetectedDrug[]>(`/api/patients/${patientId}/detected-drugs`);
     },
     create(patientId: string, data: CreateMedicationReq) {
       return request<Medication>(`/api/patients/${patientId}/medications`, jsonRequest('POST', data));

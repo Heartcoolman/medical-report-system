@@ -491,6 +491,18 @@ pub struct UpdateMedicationReq {
     pub active: Option<bool>,
 }
 
+// --- Detected Drug (from expenses) ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DetectedDrug {
+    pub name: String,
+    pub first_date: String,
+    pub last_date: String,
+    pub occurrence_count: usize,
+    pub typical_quantity: String,
+    pub dates: Vec<String>,
+}
+
 // --- Pagination ---
 
 #[derive(Debug, Clone, Serialize)]

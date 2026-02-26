@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::error::{run_blocking, AppError};
 use crate::models::{
-    ApiResponse, CreateMedicationReq, Medication, UpdateMedicationReq,
+    ApiResponse, CreateMedicationReq, DetectedDrug, Medication, UpdateMedicationReq,
 };
 use crate::AppState;
 
@@ -124,4 +124,15 @@ pub async fn delete_medication(
     let db = state.db.clone();
     run_blocking(move || db.delete_medication(&id)).await?;
     Ok(Json(ApiResponse::ok_msg("删除成功")))
+}
+
+// --- Detected Drugs from Expenses ---
+
+pub async fn list_detected_drugs(
+    State(state): State<AppState>,
+    Path(patient_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<DetectedDrug>>>, AppError> {
+    let db = state.db.clone();
+    let drugs = run_blocking(move || db.list_detected_drugs(&patient_id)).await?;
+    Ok(Json(ApiResponse::ok(drugs, "查询成功")))
 }

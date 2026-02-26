@@ -369,6 +369,17 @@ export interface UpdateMedicationReq {
   active?: boolean;
 }
 
+// --- Detected Drug (from expenses) ---
+
+export interface DetectedDrug {
+  name: string;
+  first_date: string;
+  last_date: string;
+  occurrence_count: number;
+  typical_quantity: string;
+  dates: string[];
+}
+
 // --- Timeline ---
 
 export interface TimelineEvent {

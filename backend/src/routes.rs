@@ -100,6 +100,10 @@ fn readonly_routes() -> Router<AppState> {
             "/api/patients/:patient_id/medications",
             get(handlers::medications::list_medications),
         )
+        .route(
+            "/api/patients/:patient_id/detected-drugs",
+            get(handlers::medications::list_detected_drugs),
+        )
         // Timeline (read)
         .route(
             "/api/patients/:patient_id/timeline",

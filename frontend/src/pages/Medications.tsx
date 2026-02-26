@@ -1,13 +1,17 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
 import { api } from '@/api/client'
-import type { Medication } from '@/api/types'
+import type { Medication, DetectedDrug } from '@/api/types'
 import { Button, Card, CardBody, Badge, Modal, Input, useToast, Spinner, Empty } from '@/components'
 
 export default function Medications() {
   const params = useParams<{ id: string }>()
   const { toast } = useToast()
 
+  // Detected drugs from expense records (primary)
+  const [detectedDrugs] = createResource(() => params.id, (id) => api.medications.detectedDrugs(id))
+
+  // Manual medications (secondary)
   const [meds, { refetch }] = createResource(() => params.id, (id) => api.medications.list(id))
   const [showAdd, setShowAdd] = createSignal(false)
   const [editMed, setEditMed] = createSignal<Medication | null>(null)
@@ -20,6 +24,9 @@ export default function Medications() {
   const [formStart, setFormStart] = createSignal('')
   const [formEnd, setFormEnd] = createSignal('')
   const [formNote, setFormNote] = createSignal('')
+
+  // Expand state for detected drug detail
+  const [expandedDrug, setExpandedDrug] = createSignal<string | null>(null)
 
   function resetForm() {
     setFormName(''); setFormDosage(''); setFormFreq('')
@@ -98,36 +105,76 @@ export default function Medications() {
       <div class="max-w-2xl mx-auto">
         <div class="flex items-center justify-between mb-6">
           <h1 class="page-title">用药管理</h1>
-          <Button variant="primary" size="sm" onClick={openAdd}>添加用药</Button>
+          <Button variant="outline" size="sm" onClick={openAdd}>手动添加</Button>
         </div>
 
-        <Show when={meds.loading}>
-          <div class="flex justify-center py-12"><Spinner size="lg" variant="orbital" /></div>
-        </Show>
+        {/* === Section 1: Detected Drugs from Expense Records (Primary) === */}
+        <div class="mb-8">
+          <div class="flex items-center gap-2 mb-3">
+            <h2 class="section-title">消费清单用药</h2>
+            <Badge variant="accent">自动识别</Badge>
+          </div>
 
-        <Show when={meds() && !meds.loading}>
-          <Show when={(meds() ?? []).length > 0} fallback={
-            <Empty title="暂无用药记录" description="点击右上角添加用药信息" />
-          }>
-            <Show when={activeMeds().length > 0}>
-              <h2 class="section-title mb-3">当前用药</h2>
-              <div class="space-y-2 mb-6">
-                <For each={activeMeds()}>
-                  {(med) => <MedCard med={med} onEdit={() => openEdit(med)} onToggle={() => handleToggleActive(med)} onDelete={() => setDeleteMedId(med.id)} />}
+          <Show when={detectedDrugs.loading}>
+            <div class="flex justify-center py-8"><Spinner size="md" variant="orbital" /></div>
+          </Show>
+
+          <Show when={detectedDrugs() && !detectedDrugs.loading}>
+            <Show when={(detectedDrugs() ?? []).length > 0} fallback={
+              <Empty title="暂无消费清单用药" description="上传消费清单后，药品信息将自动提取到此处" />
+            }>
+              <div class="space-y-2">
+                <For each={detectedDrugs()!}>
+                  {(drug) => <DetectedDrugCard drug={drug} expanded={expandedDrug() === drug.name} onToggle={() => setExpandedDrug(expandedDrug() === drug.name ? null : drug.name)} />}
                 </For>
               </div>
-            </Show>
-
-            <Show when={inactiveMeds().length > 0}>
-              <h2 class="section-title mb-3 text-content-tertiary">已停用</h2>
-              <div class="space-y-2 opacity-60">
-                <For each={inactiveMeds()}>
-                  {(med) => <MedCard med={med} onEdit={() => openEdit(med)} onToggle={() => handleToggleActive(med)} onDelete={() => setDeleteMedId(med.id)} />}
-                </For>
-              </div>
+              <p class="text-xs text-content-tertiary mt-3">
+                共识别 {detectedDrugs()!.length} 种药品，数据来源于消费清单中的药品类目
+              </p>
             </Show>
           </Show>
-        </Show>
+        </div>
+
+        {/* === Section 2: Manual Medications (Secondary) === */}
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <h2 class="section-title">手动记录</h2>
+            <Badge variant="info">自定义</Badge>
+          </div>
+
+          <Show when={meds.loading}>
+            <div class="flex justify-center py-8"><Spinner size="md" variant="orbital" /></div>
+          </Show>
+
+          <Show when={meds() && !meds.loading}>
+            <Show when={(meds() ?? []).length > 0} fallback={
+              <Card variant="outlined">
+                <CardBody class="py-6 text-center">
+                  <p class="text-sm text-content-secondary mb-3">可手动添加消费清单中未包含的用药信息</p>
+                  <Button variant="outline" size="sm" onClick={openAdd}>添加用药</Button>
+                </CardBody>
+              </Card>
+            }>
+              <Show when={activeMeds().length > 0}>
+                <p class="micro-title mb-2">当前用药</p>
+                <div class="space-y-2 mb-4">
+                  <For each={activeMeds()}>
+                    {(med) => <MedCard med={med} onEdit={() => openEdit(med)} onToggle={() => handleToggleActive(med)} onDelete={() => setDeleteMedId(med.id)} />}
+                  </For>
+                </div>
+              </Show>
+
+              <Show when={inactiveMeds().length > 0}>
+                <p class="micro-title mb-2">已停用</p>
+                <div class="space-y-2 opacity-60">
+                  <For each={inactiveMeds()}>
+                    {(med) => <MedCard med={med} onEdit={() => openEdit(med)} onToggle={() => handleToggleActive(med)} onDelete={() => setDeleteMedId(med.id)} />}
+                  </For>
+                </div>
+              </Show>
+            </Show>
+          </Show>
+        </div>
 
         {/* Add/Edit Modal */}
         <Modal open={showAdd() || !!editMed()} onClose={() => { setShowAdd(false); setEditMed(null) }} title={editMed() ? '编辑用药' : '添加用药'}>
@@ -157,6 +204,57 @@ export default function Medications() {
         </Modal>
       </div>
     </div>
+  )
+}
+
+function DetectedDrugCard(props: { drug: DetectedDrug; expanded: boolean; onToggle: () => void }) {
+  const dateRange = () => {
+    if (props.drug.first_date === props.drug.last_date) return props.drug.first_date
+    return `${props.drug.first_date} ~ ${props.drug.last_date}`
+  }
+
+  return (
+    <Card variant="outlined" class="overflow-hidden">
+      <CardBody class="p-3">
+        <button
+          class="w-full flex items-center justify-between gap-3 text-left cursor-pointer"
+          onClick={props.onToggle}
+        >
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-semibold text-content">{props.drug.name}</span>
+              <Show when={props.drug.typical_quantity}>
+                <Badge variant="info">{props.drug.typical_quantity}</Badge>
+              </Show>
+            </div>
+            <div class="text-xs text-content-secondary mt-0.5">
+              {dateRange()} · 出现 {props.drug.occurrence_count} 天
+            </div>
+          </div>
+          <svg
+            class={`w-4 h-4 text-content-tertiary shrink-0 transition-transform duration-200 ${props.expanded ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <Show when={props.expanded}>
+          <div class="mt-2 pt-2 border-t border-border/50">
+            <p class="micro-title mb-1.5">使用日期</p>
+            <div class="flex flex-wrap gap-1">
+              <For each={props.drug.dates}>
+                {(date) => (
+                  <span class="inline-block px-2 py-0.5 text-xs rounded-md bg-surface-secondary text-content-secondary">
+                    {date}
+                  </span>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+      </CardBody>
+    </Card>
   )
 }
 
