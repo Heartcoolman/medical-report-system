@@ -143,6 +143,12 @@ export default function EditLogs() {
                                 >
                                   查看报告
                                 </A>
+                                <Show when={log.operator_name}>
+                                  <span class="text-border">·</span>
+                                  <span class="text-xs text-content-secondary">
+                                    操作人: {log.operator_name}
+                                  </span>
+                                </Show>
                               </div>
                               <p class="text-sm text-content">{log.summary}</p>
 

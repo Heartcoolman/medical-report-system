@@ -208,6 +208,10 @@ impl Database {
         )
         .ok(); // ignore error if column already exists
 
+        // Migration: add operator columns to edit_logs
+        let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_name TEXT", []);
+
         backfill_comparator_statuses(&conn)?;
 
         Ok(Self {

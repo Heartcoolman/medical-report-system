@@ -228,6 +228,8 @@ export interface EditLog {
   summary: string;
   changes: FieldChange[];
   created_at: string;
+  operator_id?: string | null;
+  operator_name?: string | null;
 }
 
 export interface UpdateTestItemReq {

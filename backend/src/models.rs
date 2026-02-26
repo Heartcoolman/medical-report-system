@@ -346,6 +346,8 @@ pub struct EditLog {
     pub summary: String,
     pub changes: Vec<FieldChange>,
     pub created_at: String,
+    pub operator_id: Option<String>,
+    pub operator_name: Option<String>,
 }
 
 #[derive(Deserialize)]

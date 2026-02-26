@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError};
 use crate::models::{
     ApiResponse, CreateReportReq, CreateTestItemReq, EditLog, FieldChange, PaginatedList, Report,
@@ -101,6 +102,7 @@ pub async fn delete_report_handler(
 pub async fn update_report(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    auth: AuthUser,
     Json(req): Json<UpdateReportReq>,
 ) -> Result<Json<ApiResponse<Report>>, AppError> {
     let db = state.db.clone();
@@ -171,6 +173,8 @@ pub async fn update_report(
                     summary,
                     changes,
                     created_at: Utc::now().to_rfc3339(),
+                    operator_id: Some(auth.0.sub.clone()),
+                    operator_name: Some(auth.0.username.clone()),
                 };
                 let db = state.db.clone();
                 let _ = run_blocking(move || db.create_edit_log(&log)).await;
@@ -183,6 +187,7 @@ pub async fn update_report(
 
 pub async fn create_test_item(
     State(state): State<AppState>,
+    auth: AuthUser,
     Json(req): Json<CreateTestItemReq>,
 ) -> Result<Json<ApiResponse<TestItem>>, AppError> {
     // Get report to find patient_id for logging
@@ -219,6 +224,8 @@ pub async fn create_test_item(
         summary: format!("新增了检验项目「{}」", item.name),
         changes: vec![],
         created_at: Utc::now().to_rfc3339(),
+        operator_id: Some(auth.0.sub.clone()),
+        operator_name: Some(auth.0.username.clone()),
     };
     let db = state.db.clone();
     let _ = run_blocking(move || db.create_edit_log(&log)).await;
@@ -263,6 +270,7 @@ pub async fn list_trend_items(
 pub async fn update_test_item(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    auth: AuthUser,
     Json(req): Json<UpdateTestItemReq>,
 ) -> Result<Json<ApiResponse<TestItem>>, AppError> {
     let db = state.db.clone();
@@ -352,6 +360,8 @@ pub async fn update_test_item(
             summary,
             changes,
             created_at: Utc::now().to_rfc3339(),
+            operator_id: Some(auth.0.sub.clone()),
+            operator_name: Some(auth.0.username.clone()),
         };
         let db = state.db.clone();
         let _ = run_blocking(move || db.create_edit_log(&log)).await;
@@ -363,6 +373,7 @@ pub async fn update_test_item(
 pub async fn delete_test_item_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    auth: AuthUser,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     // Get item before deletion for logging
     let db = state.db.clone();
@@ -396,6 +407,8 @@ pub async fn delete_test_item_handler(
         summary: format!("删除了检验项目「{}」(值: {}{})", item.name, item.value, if item.unit.is_empty() { String::new() } else { format!(" {}", item.unit) }),
         changes: vec![],
         created_at: Utc::now().to_rfc3339(),
+        operator_id: Some(auth.0.sub.clone()),
+        operator_name: Some(auth.0.username.clone()),
     };
     let db = state.db.clone();
     let _ = run_blocking(move || db.create_edit_log(&log)).await;

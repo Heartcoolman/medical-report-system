@@ -129,8 +129,42 @@ async fn main() {
 
     // SPA fallback: serve index.html for non-API, non-uploads, non-static-file requests
     let spa_fallback = axum::routing::get(|| async {
-        match tokio::fs::read(format!("{}/index.html", STATIC_DIR)).await {
-            Ok(contents) => axum::response::Html(contents).into_response(),
+        let index_path = format!("{}/index.html", STATIC_DIR);
+        let notice_path = "data/update_notice.txt";
+
+        match tokio::fs::read(&index_path).await {
+            Ok(contents) => {
+                let notice = tokio::fs::read_to_string(notice_path).await
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+
+                if let Some(msg) = notice {
+                    let escaped = html_escape(&msg);
+                    let banner = format!(r#"
+<style>
+#__update_notice{{position:fixed;top:0;left:0;right:0;z-index:99999;
+background:#f59e0b;color:#000;padding:10px 48px 10px 16px;
+font-size:14px;font-family:system-ui,sans-serif;
+box-shadow:0 2px 8px rgba(0,0,0,.2);line-height:1.4}}
+#__update_notice button{{position:absolute;right:12px;top:50%;
+transform:translateY(-50%);background:none;border:none;
+cursor:pointer;font-size:20px;padding:0 4px}}
+#__update_notice.hidden{{display:none}}
+</style>
+<div id="__update_notice">
+⚠️ {escaped}
+<button onclick="this.parentElement.className='hidden';sessionStorage.setItem('_un_d','1')">×</button>
+</div>
+<script>if(sessionStorage.getItem('_un_d')==='1'){{document.getElementById('__update_notice').className='hidden'}}</script>
+"#);
+                    let html = String::from_utf8_lossy(&contents);
+                    let modified = html.replacen("</body>", &format!("{}</body>", banner), 1);
+                    axum::response::Html(modified).into_response()
+                } else {
+                    axum::response::Html(contents).into_response()
+                }
+            }
             Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
         }
     });
@@ -171,6 +205,14 @@ async fn main() {
         std::process::exit(1);
     }
     tracing::info!("服务已关闭");
+}
+
+/// Escape special HTML characters to prevent XSS in injected banners.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Check that required environment variables are set at startup.

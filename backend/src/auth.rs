@@ -308,6 +308,11 @@ pub async fn login(
 
     let token = create_token(&user_id, &req.username.trim(), &role)?;
 
+    let notice = std::fs::read_to_string("data/update_notice.txt")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Ok(Json(json!({
         "success": true,
         "data": {
@@ -318,11 +323,17 @@ pub async fn login(
                 "role": role,
             }
         },
-        "message": "登录成功"
+        "message": "登录成功",
+        "update_notice": notice
     })))
 }
 
 pub async fn get_me(auth: AuthUser) -> impl IntoResponse {
+    let notice = std::fs::read_to_string("data/update_notice.txt")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Json(json!({
         "success": true,
         "data": {
@@ -330,7 +341,8 @@ pub async fn get_me(auth: AuthUser) -> impl IntoResponse {
             "username": auth.0.username,
             "role": auth.0.role,
         },
-        "message": "ok"
+        "message": "ok",
+        "update_notice": notice
     }))
 }
 

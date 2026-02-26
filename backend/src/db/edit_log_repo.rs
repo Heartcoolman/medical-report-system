@@ -9,8 +9,8 @@ impl Database {
     pub fn create_edit_log(&self, log: &EditLog) -> Result<(), AppError> {
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO edit_logs (id, report_id, patient_id, action, target_type, target_id, summary, changes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO edit_logs (id, report_id, patient_id, action, target_type, target_id, summary, changes, created_at, operator_id, operator_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     log.id,
                     log.report_id,
@@ -20,7 +20,9 @@ impl Database {
                     log.target_id,
                     log.summary,
                     serde_json::to_string(&log.changes)?,
-                    log.created_at
+                    log.created_at,
+                    log.operator_id,
+                    log.operator_name
                 ],
             )?;
             Ok(())
@@ -31,7 +33,7 @@ impl Database {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, report_id, patient_id, action, target_type, target_id,
-                        summary, changes, created_at
+                        summary, changes, created_at, operator_id, operator_name
                  FROM edit_logs
                  WHERE report_id = ?1
                  ORDER BY created_at DESC, id DESC",
@@ -48,6 +50,8 @@ impl Database {
                     summary: row.get(6)?,
                     changes: serde_json::from_str(&changes_text).unwrap_or_default(),
                     created_at: row.get(8)?,
+                    operator_id: row.get(9)?,
+                    operator_name: row.get(10)?,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -79,7 +83,7 @@ impl Database {
 
             let mut stmt = conn.prepare(
                 "SELECT id, report_id, patient_id, action, target_type, target_id,
-                        summary, changes, created_at
+                        summary, changes, created_at, operator_id, operator_name
                  FROM edit_logs
                  ORDER BY created_at DESC, id DESC
                  LIMIT ?1 OFFSET ?2",
@@ -96,6 +100,8 @@ impl Database {
                     summary: row.get(6)?,
                     changes: serde_json::from_str(&changes_text).unwrap_or_default(),
                     created_at: row.get(8)?,
+                    operator_id: row.get(9)?,
+                    operator_name: row.get(10)?,
                 })
             })?;
 
