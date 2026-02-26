@@ -177,7 +177,17 @@ export default function Medications() {
         </div>
 
         {/* Add/Edit Modal */}
-        <Modal open={showAdd() || !!editMed()} onClose={() => { setShowAdd(false); setEditMed(null) }} title={editMed() ? '编辑用药' : '添加用药'}>
+        <Modal
+          open={showAdd() || !!editMed()}
+          onClose={() => { setShowAdd(false); setEditMed(null) }}
+          title={editMed() ? '编辑用药' : '添加用药'}
+          footer={
+            <>
+              <Button variant="outline" onClick={() => { setShowAdd(false); setEditMed(null) }}>取消</Button>
+              <Button variant="primary" loading={saving()} onClick={handleSave}>保存</Button>
+            </>
+          }
+        >
           <div class="space-y-3">
             <Input label="药品名称" value={formName()} onInput={(e) => setFormName(e.currentTarget.value)} placeholder="如：恩替卡韦" />
             <Input label="剂量" value={formDosage()} onInput={(e) => setFormDosage(e.currentTarget.value)} placeholder="如：0.5mg" />
@@ -187,20 +197,22 @@ export default function Medications() {
               <Input label="结束日期" type="date" value={formEnd()} onInput={(e) => setFormEnd(e.currentTarget.value)} />
             </div>
             <Input label="备注" value={formNote()} onInput={(e) => setFormNote(e.currentTarget.value)} placeholder="可选" />
-            <div class="flex gap-2 justify-end pt-2">
-              <Button variant="outline" onClick={() => { setShowAdd(false); setEditMed(null) }}>取消</Button>
-              <Button variant="primary" loading={saving()} onClick={handleSave}>保存</Button>
-            </div>
           </div>
         </Modal>
 
         {/* Delete Modal */}
-        <Modal open={!!deleteMedId()} onClose={() => setDeleteMedId(null)} title="确认删除">
-          <p class="text-sm text-content-secondary mb-4">确定要删除这条用药记录吗？</p>
-          <div class="flex gap-2 justify-end">
-            <Button variant="outline" onClick={() => setDeleteMedId(null)}>取消</Button>
-            <Button variant="danger" onClick={handleDelete}>确认删除</Button>
-          </div>
+        <Modal
+          open={!!deleteMedId()}
+          onClose={() => setDeleteMedId(null)}
+          title="确认删除"
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setDeleteMedId(null)}>取消</Button>
+              <Button variant="danger" onClick={handleDelete}>确认删除</Button>
+            </>
+          }
+        >
+          <p class="text-content-secondary">确定要删除这条用药记录吗？</p>
         </Modal>
       </div>
     </div>

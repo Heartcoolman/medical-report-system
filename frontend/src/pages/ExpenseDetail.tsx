@@ -25,12 +25,12 @@ const CATEGORY_ICONS: Record<string, string> = {
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
-  drug: 'bg-blue-100 text-blue-800',
-  test: 'bg-purple-100 text-purple-800',
-  treatment: 'bg-green-100 text-green-800',
-  material: 'bg-orange-100 text-orange-800',
-  nursing: 'bg-pink-100 text-pink-800',
-  other: 'bg-gray-100 text-gray-700',
+  drug: 'bg-info-light text-info',
+  test: 'bg-accent-light text-accent',
+  treatment: 'bg-success-light text-success',
+  material: 'bg-warning-light text-warning',
+  nursing: 'bg-error-light text-error',
+  other: 'bg-surface-secondary text-content-secondary',
 }
 
 export default function ExpenseDetail() {
@@ -78,28 +78,22 @@ export default function ExpenseDetail() {
   }
 
   return (
-    <div class="space-y-4">
+    <div class="page-shell space-y-4">
       {/* Header */}
-      <div class="flex items-center gap-3">
-        <button
-          class="p-2 rounded-lg hover:bg-surface-secondary text-content-secondary"
-          onClick={() => navigate(-1)}
-        >
-          ← 返回
-        </button>
-        <h1 class="text-lg font-bold text-content">消费详情</h1>
-      </div>
+      <h1 class="page-title">消费详情</h1>
 
       <Show when={detail.loading}>
         <div class="flex items-center justify-center py-12">
-          <Spinner size="lg" />
+          <Spinner size="lg" variant="orbital" />
         </div>
       </Show>
 
       <Show when={detail.error}>
-        <div class="text-center py-12 text-red-500">
-          加载失败: {(detail.error as Error)?.message}
-        </div>
+        <Card>
+          <CardBody>
+            <p class="text-error text-center">加载失败: {(detail.error as Error)?.message}</p>
+          </CardBody>
+        </Card>
       </Show>
 
       <Show when={detail()}>
@@ -157,7 +151,7 @@ export default function ExpenseDetail() {
                             <Show when={item.quantity}>
                               <span class="text-content-secondary text-xs">{item.quantity}</span>
                             </Show>
-                            <span class={`font-medium whitespace-nowrap ${item.amount < 0 ? 'text-green-600' : 'text-content'}`}>
+                            <span class={`font-medium whitespace-nowrap ${item.amount < 0 ? 'text-success' : 'text-content'}`}>
                               ¥{item.amount.toFixed(2)}
                             </span>
                           </div>
@@ -208,23 +202,26 @@ export default function ExpenseDetail() {
             {/* Delete button */}
             <div class="flex justify-end">
               <Button variant="ghost" onClick={() => setShowDeleteModal(true)}>
-                <span class="text-red-500">删除此记录</span>
+                <span class="text-error">删除此记录</span>
               </Button>
             </div>
 
             {/* Delete confirmation modal */}
-            <Modal open={showDeleteModal()} onClose={() => setShowDeleteModal(false)} title="确认删除" size="sm">
-              <p class="text-content-secondary text-sm mb-4">
+            <Modal
+              open={showDeleteModal()}
+              onClose={() => setShowDeleteModal(false)}
+              title="确认删除"
+              size="sm"
+              footer={
+                <>
+                  <Button variant="outline" onClick={() => setShowDeleteModal(false)}>取消</Button>
+                  <Button variant="danger" loading={deleting()} onClick={handleDelete}>确认删除</Button>
+                </>
+              }
+            >
+              <p class="text-content-secondary">
                 确定要删除 {d().expense_date} 的消费记录吗？此操作不可撤销。
               </p>
-              <div class="flex justify-end gap-3">
-                <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>取消</Button>
-                <Button variant="primary" onClick={handleDelete} disabled={deleting()}>
-                  <Show when={deleting()} fallback="确认删除">
-                    <Spinner size="sm" /> <span class="ml-1">删除中...</span>
-                  </Show>
-                </Button>
-              </div>
             </Modal>
           </div>
         )}

@@ -96,7 +96,7 @@ export default function ReportCompare() {
         </div>
 
         <Show when={leftReport.loading || rightReport.loading}>
-          <div class="flex justify-center py-8"><Spinner size="md" /></div>
+          <div class="flex justify-center py-8"><Spinner size="lg" variant="orbital" /></div>
         </Show>
 
         <Show when={leftReport() && rightReport()}>

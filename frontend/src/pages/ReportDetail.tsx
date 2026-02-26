@@ -294,7 +294,7 @@ export default function ReportDetail() {
       <div class="flex-1 min-w-0 space-y-6">
         <Show when={report.loading}>
           <div class="flex justify-center py-12">
-            <Spinner size="lg" />
+            <Spinner size="lg" variant="orbital" />
           </div>
         </Show>
 

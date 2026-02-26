@@ -340,6 +340,8 @@ function Breadcrumbs() {
     } else if (path.match(/^\/patients\/[^/]+\/health-assessment$/)) {
       parts.push({ label: '患者详情', href: path.replace('/health-assessment', '') })
       parts.push({ label: 'AI 健康评估' })
+    } else if (path.match(/^\/expenses\/[^/]+$/)) {
+      parts.push({ label: '消费详情' })
     }
 
     return parts
