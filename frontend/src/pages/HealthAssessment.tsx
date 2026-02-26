@@ -17,31 +17,9 @@ const STATUS_COLORS: Record<string, string> = {
   '需就医': 'text-error',
 }
 
-const CACHE_KEY_PREFIX = 'health_assessment_cache_'
-
-interface CachedAssessment {
-  data: HealthAssessment
-  timestamp: number
-}
-
-function loadCached(patientId: string): CachedAssessment | null {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY_PREFIX + patientId)
-    if (!raw) return null
-    return JSON.parse(raw) as CachedAssessment
-  } catch { return null }
-}
-
-function saveCache(patientId: string, data: HealthAssessment) {
-  try {
-    const entry: CachedAssessment = { data, timestamp: Date.now() }
-    localStorage.setItem(CACHE_KEY_PREFIX + patientId, JSON.stringify(entry))
-  } catch {}
-}
-
-function formatCacheTime(ts: number): string {
-  const d = new Date(ts)
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
+function formatCacheTime(ts: string): string {
+  // created_at is ISO/datetime string from backend
+  return ts.replace('T', ' ').slice(0, 16)
 }
 
 export default function HealthAssessmentPage() {
@@ -49,16 +27,31 @@ export default function HealthAssessmentPage() {
   const { toast } = useToast()
   const [patient] = createResource(() => params.id, (id) => api.patients.get(id))
 
+  const [cachedAssessment, { refetch: refetchCache }] = createResource(
+    () => params.id,
+    (id) => api.healthAssessment.getCache(id),
+  )
+
   const [loading, setLoading] = createSignal(false)
   const [assessment, setAssessment] = createSignal<HealthAssessment | null>(null)
   const [error, setError] = createSignal('')
-  const [cachedTime, setCachedTime] = createSignal<number | null>(null)
+  const [cachedTime, setCachedTime] = createSignal<string | null>(null)
 
-  // Load cached result on mount
-  const cached = loadCached(params.id)
-  if (cached) {
-    setAssessment(cached.data)
-    setCachedTime(cached.timestamp)
+  // Apply cached result when resource loads
+  const effectiveAssessment = () => {
+    const live = assessment()
+    if (live) return live
+    const cached = cachedAssessment()
+    if (cached) return cached.content
+    return null
+  }
+
+  const effectiveCachedTime = () => {
+    const live = cachedTime()
+    if (live) return live
+    const cached = cachedAssessment()
+    if (cached) return cached.created_at
+    return null
   }
 
   async function startAssessment() {
@@ -103,8 +96,9 @@ export default function HealthAssessmentPage() {
           try {
             const parsed = JSON.parse(data) as HealthAssessment
             setAssessment(parsed)
-            saveCache(params.id, parsed)
-            setCachedTime(Date.now())
+            setCachedTime(new Date().toISOString())
+            // Refetch backend cache so it's up to date
+            refetchCache()
           } catch {}
         }
       }
@@ -124,7 +118,7 @@ export default function HealthAssessmentPage() {
           <p class="sub-text mb-6">基于 {patient()!.name} 的全部医疗数据生成综合评估</p>
         </Show>
 
-        <Show when={!assessment() && !loading()}>
+        <Show when={!effectiveAssessment() && !loading() && !cachedAssessment.loading}>
           <Card variant="elevated">
             <CardBody class="p-8 text-center">
               <svg class="w-16 h-16 mx-auto text-accent/30 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
@@ -132,6 +126,15 @@ export default function HealthAssessmentPage() {
               </svg>
               <p class="text-content-secondary mb-4">AI 将综合分析所有报告、用药和体温数据，生成健康风险评估报告</p>
               <Button variant="primary" onClick={startAssessment}>开始评估</Button>
+            </CardBody>
+          </Card>
+        </Show>
+
+        <Show when={cachedAssessment.loading && !assessment()}>
+          <Card variant="elevated">
+            <CardBody class="p-8 flex flex-col items-center gap-4">
+              <Spinner size="sm" />
+              <p class="text-xs text-content-tertiary">检查缓存...</p>
             </CardBody>
           </Card>
         </Show>
@@ -154,7 +157,7 @@ export default function HealthAssessmentPage() {
           </Card>
         </Show>
 
-        <Show when={assessment()}>
+        <Show when={effectiveAssessment()}>
           {(a) => (
             <div class="space-y-4">
               {/* Header */}
@@ -236,8 +239,8 @@ export default function HealthAssessmentPage() {
                 <p class="text-xs text-content-tertiary text-center py-2">{a().disclaimer}</p>
               </Show>
 
-              <Show when={cachedTime()}>
-                <p class="text-xs text-content-tertiary text-center">评估生成于 {formatCacheTime(cachedTime()!)}</p>
+              <Show when={effectiveCachedTime()}>
+                <p class="text-xs text-content-tertiary text-center">评估生成于 {formatCacheTime(effectiveCachedTime()!)}</p>
               </Show>
 
               <div class="text-center">

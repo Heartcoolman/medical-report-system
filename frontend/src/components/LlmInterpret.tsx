@@ -17,7 +17,7 @@ export function LlmInterpret(props: LlmInterpretProps) {
   const [content, setContent] = createSignal('')
   const [points, setPoints] = createSignal<string[] | null>(null)
   const [error, setError] = createSignal('')
-  let eventSource: EventSource | null = null
+  let currentAbort: AbortController | null = null
 
   function extractPoints(value: unknown): string[] | null {
     if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
@@ -55,9 +55,9 @@ export function LlmInterpret(props: LlmInterpretProps) {
   }
 
   function cleanup() {
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
+    if (currentAbort) {
+      currentAbort.abort()
+      currentAbort = null
     }
   }
 
@@ -123,61 +123,79 @@ export function LlmInterpret(props: LlmInterpretProps) {
     setError('')
     setState('loading')
 
-    // Use relative URL so requests go through Vite proxy in dev mode (same-origin, no CORS issues)
-    const sseUrl = props.url
-    const es = new EventSource(sseUrl)
-    eventSource = es
+    const abort = new AbortController()
+    currentAbort = abort
 
-    es.onmessage = (event) => {
-      const data = event.data
-      if (data === '[DONE]') {
-        es.close()
-        eventSource = null
-        setState('done')
-        return
-      }
-      if (data.startsWith('[错误]')) {
-        es.close()
-        eventSource = null
-        setError(data)
-        setState('error')
-        return
-      }
-      setState('streaming')
-
-      const trimmed = String(data ?? '').trim()
-      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-        try {
-          const parsed = JSON.parse(trimmed) as unknown
-          const pts = extractPoints(parsed)
-          if (pts) {
-            setPoints(pts)
-            setContent('')
-            return
-          }
-        } catch {
-          // fall back to plain text streaming
+    const token = localStorage.getItem('auth_token')
+    fetch(props.url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: abort.signal,
+    })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          throw new Error(`请求失败: ${resp.status}`)
         }
-      }
+        const reader = resp.body?.getReader()
+        if (!reader) throw new Error('无法读取响应流')
 
-      setContent((prev) => prev + data)
-    }
+        const decoder = new TextDecoder()
+        let buffer = ''
 
-    es.onerror = (ev) => {
-      // EventSource fires error on close or network issues
-      const readyState = es.readyState // 0=CONNECTING, 1=OPEN, 2=CLOSED
-      console.error('[LlmInterpret] SSE error', { url: sseUrl, readyState, state: state(), event: ev })
-      if (state() === 'loading') {
-        setError(`连接失败 (readyState=${readyState})，请稍后重试`)
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+
+          while (buffer.includes('\n')) {
+            const idx = buffer.indexOf('\n')
+            const line = buffer.slice(0, idx).trim()
+            buffer = buffer.slice(idx + 1)
+
+            if (!line.startsWith('data:')) continue
+            const data = line.slice(5).trim()
+
+            if (data === '[DONE]') {
+              currentAbort = null
+              setState('done')
+              return
+            }
+            if (data.startsWith('[错误]')) {
+              currentAbort = null
+              setError(data)
+              setState('error')
+              return
+            }
+            setState('streaming')
+
+            const trimmed = data.trim()
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              try {
+                const parsed = JSON.parse(trimmed) as unknown
+                const pts = extractPoints(parsed)
+                if (pts) {
+                  setPoints(pts)
+                  setContent('')
+                  continue
+                }
+              } catch {
+                // fall back to plain text streaming
+              }
+            }
+
+            setContent((prev) => prev + data)
+          }
+        }
+
+        // Stream ended without [DONE]
+        if (state() === 'streaming') {
+          setState('done')
+        }
+      })
+      .catch((err) => {
+        if (abort.signal.aborted) return
+        setError(err.message || '连接失败，请稍后重试')
         setState('error')
-      }
-      es.close()
-      eventSource = null
-      // If we were streaming, treat as done (stream ended)
-      if (state() === 'streaming') {
-        setState('done')
-      }
-    }
+      })
   }
 
   return (

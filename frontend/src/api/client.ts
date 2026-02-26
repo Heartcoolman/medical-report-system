@@ -39,6 +39,7 @@ import type {
   TimelineEvent,
   UserInfo,
   CriticalAlert,
+  HealthAssessment,
 } from './types';
 
 const TOKEN_KEY = 'auth_token'
@@ -396,6 +397,14 @@ export const api = {
   stats: {
     criticalAlerts() {
       return request<CriticalAlert[]>('/api/stats/critical-alerts');
+    },
+  },
+
+  healthAssessment: {
+    getCache(patientId: string) {
+      return request<{ content: HealthAssessment; created_at: string } | null>(
+        `/api/patients/${patientId}/health-assessment-cache`,
+      );
     },
   },
 };

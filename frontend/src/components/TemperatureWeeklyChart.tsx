@@ -12,6 +12,26 @@ const SMOOTH_CONTROL_RATIO = 0.35
 // @ts-expect-error reserved for future use
 const MAX_DAYS = 7
 
+// Location color palette (reused from TemperatureChart.tsx)
+const LOCATION_COLORS: Record<string, string> = {
+  '左腋下': '#3b82f6',
+  '右腋下': '#10b981',
+  '口腔':   '#f59e0b',
+  '耳温':   '#8b5cf6',
+  '额温':   '#06b6d4',
+  '肛温':   '#ef4444',
+  '':       'var(--accent)',
+}
+const FALLBACK_COLORS = ['#ec4899', '#6366f1', '#14b8a6', '#f97316', '#a855f7', '#64748b']
+
+function getLocationColor(loc: string, idx: number): string {
+  return LOCATION_COLORS[loc] ?? FALLBACK_COLORS[idx % FALLBACK_COLORS.length]
+}
+
+function locationLabel(loc: string): string {
+  return loc || '未标注'
+}
+
 // --- Types ---
 
 interface DailyAggregate {
@@ -177,6 +197,57 @@ export function TemperatureWeeklyChart(props: TemperatureWeeklyChartProps) {
   })
 
   const feverLineY = createMemo(() => yScale(FEVER_LINE))
+
+  // Collect all unique locations across the data
+  const allLocations = createMemo(() => {
+    const locSet = new Set<string>()
+    for (const s of filledSlots()) {
+      for (const bl of s.data.byLocation) {
+        locSet.add(bl.location)
+      }
+    }
+    return [...locSet]
+  })
+
+  const isMultiLocation = createMemo(() => allLocations().length > 1)
+
+  // Build per-location smooth curve paths
+  const locationCurves = createMemo(() => {
+    const locs = allLocations()
+    if (locs.length <= 1) return []
+    const slots = filledSlots()
+    return locs.map((loc, locIdx) => {
+      // For each filled slot, find this location's avg (skip if absent)
+      const pts: { x: number; y: number }[] = []
+      for (const s of slots) {
+        const bl = s.data.byLocation.find(b => b.location === loc)
+        if (bl) {
+          pts.push({ x: xScale(s.index), y: yScale(bl.avg) })
+        }
+      }
+      // Build smooth path
+      let path = ''
+      if (pts.length === 1) {
+        path = `M ${pts[0].x} ${pts[0].y}`
+      } else if (pts.length > 1) {
+        path = `M ${pts[0].x} ${pts[0].y}`
+        for (let i = 1; i < pts.length; i++) {
+          const prev = pts[i - 1]
+          const curr = pts[i]
+          const dx = curr.x - prev.x
+          const cp1X = prev.x + dx * SMOOTH_CONTROL_RATIO
+          const cp2X = curr.x - dx * SMOOTH_CONTROL_RATIO
+          path += ` C ${cp1X} ${prev.y} ${cp2X} ${curr.y} ${curr.x} ${curr.y}`
+        }
+      }
+      return {
+        location: loc,
+        color: getLocationColor(loc, locIdx),
+        path,
+        points: pts,
+      }
+    })
+  })
 
   const linePath = createMemo(() => {
     const pts = points()
@@ -379,8 +450,8 @@ export function TemperatureWeeklyChart(props: TemperatureWeeklyChartProps) {
           )}
         </For>
 
-        {/* Area under line */}
-        <Show when={areaPath() !== ''}>
+        {/* Area under line (single location only) */}
+        <Show when={areaPath() !== '' && !isMultiLocation()}>
           <path d={areaPath()} fill="url(#weeklyTempAreaGradient)" class="wk-area-anim" />
         </Show>
 
@@ -422,17 +493,56 @@ export function TemperatureWeeklyChart(props: TemperatureWeeklyChartProps) {
           )}
         </For>
 
-        {/* Data line */}
+        {/* Per-location curves (multi-location mode) */}
+        <Show when={isMultiLocation()}>
+          <For each={locationCurves()}>
+            {(curve) => (
+              <Show when={curve.path && curve.points.length > 1}>
+                <path
+                  d={curve.path}
+                  fill="none"
+                  stroke={curve.color}
+                  stroke-width="2"
+                  stroke-linejoin="round"
+                  stroke-linecap="round"
+                  class="wk-line-anim"
+                />
+              </Show>
+            )}
+          </For>
+        </Show>
+
+        {/* Overall average line */}
         <Show when={filledSlots().length > 1}>
           <path
             d={linePath()}
             fill="none"
-            stroke="url(#weeklyTempLineGradient)"
-            stroke-width="2.5"
+            stroke={isMultiLocation() ? 'var(--content-tertiary)' : 'url(#weeklyTempLineGradient)'}
+            stroke-width={isMultiLocation() ? '1.5' : '2.5'}
             stroke-linejoin="round"
             stroke-linecap="round"
+            stroke-dasharray={isMultiLocation() ? '6 4' : 'none'}
             class="wk-line-anim"
           />
+        </Show>
+
+        {/* Per-location data points (multi-location mode) */}
+        <Show when={isMultiLocation()}>
+          <For each={locationCurves()}>
+            {(curve) => (
+              <For each={curve.points}>
+                {(pt) => (
+                  <circle
+                    cx={pt.x}
+                    cy={pt.y}
+                    r="3"
+                    fill={curve.color}
+                    opacity="0.7"
+                  />
+                )}
+              </For>
+            )}
+          </For>
         </Show>
 
         {/* Data points */}
@@ -580,6 +690,27 @@ export function TemperatureWeeklyChart(props: TemperatureWeeklyChartProps) {
             </div>
           )
         }}
+      </Show>
+
+      {/* Legend for multi-location */}
+      <Show when={isMultiLocation()}>
+        <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 mt-1 px-2">
+          <For each={locationCurves()}>
+            {(curve) => (
+              <div class="flex items-center gap-1.5 text-xs text-content-secondary">
+                <span
+                  class="inline-block w-3 h-0.5 rounded-full"
+                  style={{ background: curve.color }}
+                />
+                {locationLabel(curve.location)}
+              </div>
+            )}
+          </For>
+          <div class="flex items-center gap-1.5 text-xs text-content-tertiary">
+            <span class="inline-block w-3 border-t border-dashed border-content-tertiary" />
+            均值
+          </div>
+        </div>
       </Show>
     </div>
   )

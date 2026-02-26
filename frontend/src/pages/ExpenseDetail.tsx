@@ -5,33 +5,11 @@ import {
 } from '@/components'
 import { api } from '@/api/client'
 import type { ExpenseItem } from '@/api/types'
-
-const CATEGORY_LABELS: Record<string, string> = {
-  drug: '药品',
-  test: '检查化验',
-  treatment: '治疗操作',
-  material: '医用材料',
-  nursing: '护理',
-  other: '其他',
-}
-
-const CATEGORY_ICONS: Record<string, string> = {
-  drug: 'M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z',
-  test: 'M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 00.659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 5.636a2.25 2.25 0 01-2.061 1.364H9.531a2.25 2.25 0 01-2.061-1.364L5 14.5m14 0H5',
-  treatment: 'M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z',
-  material: 'M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z',
-  nursing: 'M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z',
-  other: 'M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z',
-}
-
-const CATEGORY_COLORS: Record<string, string> = {
-  drug: 'bg-info-light text-info',
-  test: 'bg-accent-light text-accent',
-  treatment: 'bg-success-light text-success',
-  material: 'bg-warning-light text-warning',
-  nursing: 'bg-error-light text-error',
-  other: 'bg-surface-secondary text-content-secondary',
-}
+import {
+  EXPENSE_CATEGORY_LABELS as CATEGORY_LABELS,
+  EXPENSE_CATEGORY_ICONS as CATEGORY_ICONS,
+  EXPENSE_CATEGORY_COLORS as CATEGORY_COLORS,
+} from '@/lib/expense-constants'
 
 export default function ExpenseDetail() {
   const params = useParams()

@@ -40,8 +40,6 @@ export default function PatientEdit() {
     const errs: Record<string, string> = {}
     if (!name().trim()) errs.name = '请输入患者姓名'
     if (!gender()) errs.gender = '请选择性别'
-    if (!phone().trim()) errs.phone = '请输入联系电话'
-    if (!idNumber().trim()) errs.id_number = '请输入身份证号'
     setErrors(errs)
     return Object.keys(errs).length === 0
   }

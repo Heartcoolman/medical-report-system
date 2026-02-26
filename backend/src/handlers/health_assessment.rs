@@ -1,12 +1,15 @@
 use axum::{
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
+    Json,
 };
 use futures_util::StreamExt;
 use tokio_stream::Stream;
 
 use crate::auth::AuthUser;
+use crate::db::Database;
 use crate::error::{run_blocking, AppError};
+use crate::models::ApiResponse;
 use crate::AppState;
 
 use super::{INTERPRET_API_URL, INTERPRET_MODEL};
@@ -97,14 +100,42 @@ pub async fn health_assessment(
     }
 
     let client = state.http_client.clone();
-    let stream = build_assessment_stream(client, prompt, api_key);
+    let save_to = Some((state.db.clone(), patient_id));
+    let stream = build_assessment_stream(client, prompt, api_key, save_to);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+pub async fn get_cached_assessment(
+    _auth: AuthUser,
+    State(state): State<AppState>,
+    Path(patient_id): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let cached = run_blocking(move || db.get_assessment(&pid)).await?;
+    match cached {
+        Some((content, created_at)) => {
+            let parsed_content: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or_else(|_| serde_json::Value::String(content.clone()));
+            let data = serde_json::json!({
+                "content": parsed_content,
+                "created_at": created_at,
+            });
+            Ok(Json(ApiResponse::ok(data, "查询成功")))
+        }
+        None => Ok(Json(ApiResponse {
+            success: true,
+            data: None,
+            message: "暂无缓存评估".to_string(),
+        })),
+    }
 }
 
 fn build_assessment_stream(
     client: reqwest::Client,
     prompt: String,
     api_key: String,
+    save_to: Option<(Database, String)>,
 ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> {
     async_stream::stream! {
         let body = serde_json::json!({
@@ -169,7 +200,12 @@ fn build_assessment_stream(
                                 .map_err(|e| format!("解析 JSON 失败: {}", e))
                         });
                     match parsed {
-                        Ok(json) => yield Ok(Event::default().data(json)),
+                        Ok(ref json) => {
+                            if let Some((ref db, ref pid)) = save_to {
+                                let _ = db.save_assessment(pid, json);
+                            }
+                            yield Ok(Event::default().data(json.clone()));
+                        }
                         Err(msg) => yield Ok(Event::default().data(format!("[错误] {}", msg))),
                     }
                     yield Ok(Event::default().data("[DONE]"));
@@ -201,7 +237,12 @@ fn build_assessment_stream(
                         .map_err(|e| format!("解析 JSON 失败: {}", e))
                 });
             match parsed {
-                Ok(json) => yield Ok(Event::default().data(json)),
+                Ok(ref json) => {
+                    if let Some((ref db, ref pid)) = save_to {
+                        let _ = db.save_assessment(pid, json);
+                    }
+                    yield Ok(Event::default().data(json.clone()));
+                }
                 Err(msg) => yield Ok(Event::default().data(format!("[错误] {}", msg))),
             }
         }

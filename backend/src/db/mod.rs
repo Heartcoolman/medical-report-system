@@ -1,3 +1,4 @@
+mod assessment_repo;
 mod edit_log_repo;
 mod expense_repo;
 pub mod helpers;
@@ -193,6 +194,11 @@ impl Database {
             );
             CREATE INDEX IF NOT EXISTS idx_medications_patient
                 ON medications(patient_id, active, start_date);
+            CREATE TABLE IF NOT EXISTS health_assessments (
+                patient_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             "#,
         )?;
 

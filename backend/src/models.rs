@@ -234,6 +234,7 @@ impl<T: Serialize> ApiResponse<T> {
 pub struct PatientReq {
     pub name: String,
     pub gender: Gender,
+    #[serde(default)]
     pub dob: String,
     pub phone: String,
     pub id_number: String,

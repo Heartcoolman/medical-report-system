@@ -114,6 +114,11 @@ fn readonly_routes() -> Router<AppState> {
             "/api/stats/critical-alerts",
             get(handlers::stats::get_critical_alerts),
         )
+        // Health assessment cache (read)
+        .route(
+            "/api/patients/:patient_id/health-assessment-cache",
+            get(handlers::health_assessment::get_cached_assessment),
+        )
 }
 
 /// Routes accessible by Nurse and above.
