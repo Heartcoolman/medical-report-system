@@ -49,12 +49,10 @@ function temperatureLabel(value: number): string {
 }
 
 function formatDateTime(recorded_at: string): string {
-  // "YYYY-MM-DD HH:MM" → "MM-DD HH:MM"
+  // "YYYY-MM-DD HH:MM" → "HH:MM"
   const parts = recorded_at.split(' ')
   if (parts.length !== 2) return recorded_at
-  const dateParts = parts[0].split('-')
-  if (dateParts.length !== 3) return recorded_at
-  return `${dateParts[1]}-${dateParts[2]} ${parts[1]}`
+  return parts[1]
 }
 
 function parseRecordedAt(recorded_at: string): number {
@@ -169,11 +167,22 @@ export function TemperatureChart(props: TemperatureChartProps) {
     return { min, max }
   })
 
+  // Compute jitter offset for same-timestamp records
+  const getJitterOffset = (dataIdx: number) => {
+    const record = props.data[dataIdx]
+    const sameTimeRecords = props.data.filter(r => r.recorded_at === record.recorded_at)
+    if (sameTimeRecords.length <= 1) return 0
+    const index = sameTimeRecords.findIndex(r => r.id === record.id)
+    const totalWidth = Math.min(sameTimeRecords.length * 8, 24)
+    return (index - (sameTimeRecords.length - 1) / 2) * (totalWidth / (sameTimeRecords.length - 1 || 1))
+  }
+
   const xScaleByIndex = (i: number) => {
     const tr = timeRange()
     if (!tr || tr.max === tr.min) return CHART_PADDING.left + plotWidth() / 2
     const t = parseRecordedAt(props.data[i].recorded_at)
-    return CHART_PADDING.left + ((t - tr.min) / (tr.max - tr.min)) * plotWidth()
+    const baseX = CHART_PADDING.left + ((t - tr.min) / (tr.max - tr.min)) * plotWidth()
+    return baseX + getJitterOffset(i)
   }
 
   const xScaleByTime = (recorded_at: string) => {
@@ -189,10 +198,10 @@ export function TemperatureChart(props: TemperatureChartProps) {
     return CHART_PADDING.top + plotHeight() * (1 - ratio)
   }
 
-  // Build smooth path for a series of records
-  function buildLinePath(records: TemperatureRecord[]): string {
-    if (records.length === 0) return ''
-    const pts = records.map(r => ({ x: xScaleByTime(r.recorded_at), y: yScale(r.value) }))
+  // Build smooth path for a series of records using their data indices
+  function buildLinePath(indices: number[]): string {
+    if (indices.length === 0) return ''
+    const pts = indices.map(i => ({ x: xScaleByIndex(i), y: yScale(props.data[i].value) }))
     if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`
     let path = `M ${pts[0].x} ${pts[0].y}`
     for (let i = 1; i < pts.length; i++) {
@@ -242,17 +251,20 @@ export function TemperatureChart(props: TemperatureChartProps) {
   // Fever reference band: 37.3°C line
   const feverLineY = createMemo(() => yScale(FEVER_LINE))
 
-  // X-axis labels
+  // X-axis labels (deduplicated by timestamp, using base position without jitter)
   const dateLabels = createMemo(() => {
-    const all = props.data.map((r, i) => ({
-      x: xScaleByIndex(i),
-      label: formatDateTime(r.recorded_at),
-    }))
-    if (all.length <= 1) return all
+    const seen = new Set<string>()
+    const unique: { x: number; label: string }[] = []
+    for (const r of props.data) {
+      if (seen.has(r.recorded_at)) continue
+      seen.add(r.recorded_at)
+      unique.push({ x: xScaleByTime(r.recorded_at), label: formatDateTime(r.recorded_at) })
+    }
+    if (unique.length <= 1) return unique
     const minSpacing = 50
     const totalWidth = plotWidth()
-    const step = Math.max(1, Math.ceil((all.length * minSpacing) / totalWidth))
-    return all.filter((_, i) => i % step === 0 || i === all.length - 1)
+    const step = Math.max(1, Math.ceil((unique.length * minSpacing) / totalWidth))
+    return unique.filter((_, i) => i % step === 0 || i === unique.length - 1)
   })
 
   return (
@@ -495,7 +507,7 @@ export function TemperatureChart(props: TemperatureChartProps) {
                 {/* Line */}
                 <Show when={series.records.length > 1}>
                   <path
-                    d={buildLinePath(series.records)}
+                    d={buildLinePath(series.indices)}
                     fill="none"
                     stroke={hasMultipleLocations() ? series.color : 'url(#tempLineGradient)'}
                     stroke-width="2.5"
