@@ -136,6 +136,10 @@ cp .env.example .env
 | 备份 | `GET /api/admin/backup` | 数据库备份下载 |
 | 管理 | `GET /api/admin/users` | 用户管理 |
 
+## 相关项目
+
+- **iOS 客户端（前端）**：[medical-report-ios](https://github.com/Heartcoolman/medical-report-ios) — 本项目的 iOS 原生客户端，提供移动端报告查看与管理体验。
+
 ## 许可证
 
 MIT
