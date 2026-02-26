@@ -76,6 +76,7 @@ export default function PatientDetail() {
   const [timerSeconds, setTimerSeconds] = createSignal(300) // 5 minutes
   const [timerRunning, setTimerRunning] = createSignal(false)
   let timerInterval: number | undefined
+  let audioCtx: AudioContext | undefined
 
   const timerDisplay = createMemo(() => {
     const s = timerSeconds()
@@ -86,9 +87,15 @@ export default function PatientDetail() {
 
   const timerProgress = createMemo(() => 1 - timerSeconds() / 300)
 
+  function ensureAudioCtx() {
+    if (!audioCtx) audioCtx = new AudioContext()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    return audioCtx
+  }
+
   function playAlertSound() {
     try {
-      const ctx = new AudioContext()
+      const ctx = ensureAudioCtx()
       const playBeep = (freq: number, startTime: number, duration: number) => {
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
@@ -96,21 +103,26 @@ export default function PatientDetail() {
         gain.connect(ctx.destination)
         osc.frequency.value = freq
         osc.type = 'sine'
-        gain.gain.setValueAtTime(0.3, startTime)
+        gain.gain.setValueAtTime(0.5, startTime)
         gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration)
         osc.start(startTime)
         osc.stop(startTime + duration)
       }
-      // Three ascending beeps
-      playBeep(660, ctx.currentTime, 0.2)
-      playBeep(880, ctx.currentTime + 0.25, 0.2)
-      playBeep(1100, ctx.currentTime + 0.5, 0.3)
-    } catch {}
+      // Three rounds of ascending beeps for better noticeability
+      for (let round = 0; round < 3; round++) {
+        const offset = round * 1.0
+        playBeep(660, ctx.currentTime + offset, 0.2)
+        playBeep(880, ctx.currentTime + offset + 0.25, 0.2)
+        playBeep(1100, ctx.currentTime + offset + 0.5, 0.3)
+      }
+    } catch (e) { console.warn('playAlertSound failed:', e) }
     // Vibrate on mobile
     try { navigator.vibrate?.([200, 100, 200, 100, 200]) } catch {}
   }
 
   function startTimer() {
+    // Create AudioContext during user gesture so it won't be suspended later
+    ensureAudioCtx()
     setTimerSeconds(300)
     setTimerRunning(true)
     setShowTimerModal(true)
@@ -140,7 +152,10 @@ export default function PatientDetail() {
     setTimerSeconds(300)
   }
 
-  onCleanup(() => clearInterval(timerInterval))
+  onCleanup(() => {
+    clearInterval(timerInterval)
+    audioCtx?.close()
+  })
 
   const computeAge = (dob: string) => {
     if (!dob) return null
