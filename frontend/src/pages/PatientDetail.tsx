@@ -76,6 +76,7 @@ export default function PatientDetail() {
   const [timerSeconds, setTimerSeconds] = createSignal(300) // 5 minutes
   const [timerRunning, setTimerRunning] = createSignal(false)
   let timerInterval: number | undefined
+  let alertInterval: number | undefined
   let audioCtx: AudioContext | undefined
 
   const timerDisplay = createMemo(() => {
@@ -93,7 +94,7 @@ export default function PatientDetail() {
     return audioCtx
   }
 
-  function playAlertSound() {
+  function playBeepOnce() {
     try {
       const ctx = ensureAudioCtx()
       const playBeep = (freq: number, startTime: number, duration: number) => {
@@ -103,21 +104,29 @@ export default function PatientDetail() {
         gain.connect(ctx.destination)
         osc.frequency.value = freq
         osc.type = 'sine'
-        gain.gain.setValueAtTime(0.5, startTime)
+        gain.gain.setValueAtTime(0.6, startTime)
         gain.gain.exponentialRampToValueAtTime(0.01, startTime + duration)
         osc.start(startTime)
         osc.stop(startTime + duration)
       }
-      // Three rounds of ascending beeps for better noticeability
-      for (let round = 0; round < 3; round++) {
-        const offset = round * 1.0
-        playBeep(660, ctx.currentTime + offset, 0.2)
-        playBeep(880, ctx.currentTime + offset + 0.25, 0.2)
-        playBeep(1100, ctx.currentTime + offset + 0.5, 0.3)
-      }
+      playBeep(660, ctx.currentTime, 0.2)
+      playBeep(880, ctx.currentTime + 0.25, 0.2)
+      playBeep(1100, ctx.currentTime + 0.5, 0.3)
     } catch (e) { console.warn('playAlertSound failed:', e) }
-    // Vibrate on mobile
     try { navigator.vibrate?.([200, 100, 200, 100, 200]) } catch {}
+  }
+
+  function startAlertLoop() {
+    stopAlertLoop()
+    playBeepOnce()
+    alertInterval = window.setInterval(() => playBeepOnce(), 2000)
+  }
+
+  function stopAlertLoop() {
+    if (alertInterval) {
+      clearInterval(alertInterval)
+      alertInterval = undefined
+    }
   }
 
   function startTimer() {
@@ -131,13 +140,8 @@ export default function PatientDetail() {
         if (prev <= 1) {
           clearInterval(timerInterval)
           setTimerRunning(false)
-          playAlertSound()
+          startAlertLoop()
           toast('success', '5分钟到！请测量体温')
-          // Auto open temp input after a short delay
-          setTimeout(() => {
-            setShowTimerModal(false)
-            openTempModal()
-          }, 1500)
           return 0
         }
         return prev - 1
@@ -147,13 +151,21 @@ export default function PatientDetail() {
 
   function cancelTimer() {
     clearInterval(timerInterval)
+    stopAlertLoop()
     setTimerRunning(false)
     setShowTimerModal(false)
     setTimerSeconds(300)
   }
 
+  function dismissTimer() {
+    stopAlertLoop()
+    setShowTimerModal(false)
+    openTempModal()
+  }
+
   onCleanup(() => {
     clearInterval(timerInterval)
+    stopAlertLoop()
     audioCtx?.close()
   })
 
@@ -945,12 +957,12 @@ export default function PatientDetail() {
             {/* Temperature Measurement Timer Modal */}
             <Modal
               open={showTimerModal()}
-              onClose={cancelTimer}
+              onClose={() => timerRunning() ? cancelTimer() : dismissTimer()}
               title="体温测量计时"
               size="sm"
               footer={
                 <Show when={timerRunning()} fallback={
-                  <Button variant="outline" onClick={() => setShowTimerModal(false)}>关闭</Button>
+                  <Button variant="primary" onClick={dismissTimer}>记录体温</Button>
                 }>
                   <Button variant="outline" onClick={cancelTimer}>取消测量</Button>
                 </Show>
@@ -974,7 +986,7 @@ export default function PatientDetail() {
                   </div>
                 </div>
                 <Show when={timerRunning()} fallback={
-                  <p class="text-sm text-accent font-medium">测量完成！正在打开记录...</p>
+                  <p class="text-sm text-accent font-medium animate-pulse">测量完成！请点击下方按钮记录体温</p>
                 }>
                   <p class="text-sm text-content-secondary">请将体温计放置好，计时结束后将提醒您</p>
                 </Show>
