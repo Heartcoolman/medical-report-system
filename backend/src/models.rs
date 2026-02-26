@@ -446,6 +446,51 @@ pub struct BatchConfirmExpenseReq {
     pub days: Vec<ConfirmExpenseReq>,
 }
 
+// --- Medication ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Medication {
+    pub id: String,
+    pub patient_id: String,
+    pub name: String,
+    pub dosage: String,
+    pub frequency: String,
+    pub start_date: String,
+    #[serde(default)]
+    pub end_date: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default = "default_true")]
+    pub active: bool,
+    pub created_at: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+pub struct CreateMedicationReq {
+    pub name: String,
+    pub dosage: String,
+    pub frequency: String,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateMedicationReq {
+    pub name: Option<String>,
+    pub dosage: Option<String>,
+    pub frequency: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub note: Option<String>,
+    pub active: Option<bool>,
+}
+
 // --- Pagination ---
 
 #[derive(Debug, Clone, Serialize)]

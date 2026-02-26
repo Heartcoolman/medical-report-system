@@ -2,6 +2,7 @@ mod edit_log_repo;
 mod expense_repo;
 pub mod helpers;
 mod interpretation_repo;
+pub mod medication_repo;
 mod patient_repo;
 mod report_repo;
 mod temperature_repo;
@@ -177,6 +178,21 @@ impl Database {
                 siliconflow_api_key TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS medications (
+                id TEXT PRIMARY KEY,
+                patient_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                dosage TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT,
+                note TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_medications_patient
+                ON medications(patient_id, active, start_date);
             "#,
         )?;
 

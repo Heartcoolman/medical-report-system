@@ -95,6 +95,16 @@ fn readonly_routes() -> Router<AppState> {
             get(handlers::user_settings::get_settings)
                 .put(handlers::user_settings::update_settings),
         )
+        // Medications (read)
+        .route(
+            "/api/patients/:patient_id/medications",
+            get(handlers::medications::list_medications),
+        )
+        // Timeline (read)
+        .route(
+            "/api/patients/:patient_id/timeline",
+            get(handlers::stats::get_timeline),
+        )
 }
 
 /// Routes accessible by Nurse and above.
@@ -215,6 +225,21 @@ fn doctor_routes() -> Router<AppState> {
             "/api/expenses/:id",
             axum::routing::delete(handlers::expense::delete_expense),
         )
+        // Medications write
+        .route(
+            "/api/patients/:patient_id/medications",
+            post(handlers::medications::create_medication),
+        )
+        .route(
+            "/api/medications/:id",
+            axum::routing::put(handlers::medications::update_medication)
+                .delete(handlers::medications::delete_medication),
+        )
+        // AI Health Assessment
+        .route(
+            "/api/patients/:patient_id/health-assessment",
+            get(handlers::health_assessment::health_assessment),
+        )
         .layer(axum_mw::from_fn(auth::require_role(Role::Doctor)))
 }
 
@@ -228,6 +253,16 @@ fn admin_routes() -> Router<AppState> {
         .route(
             "/api/admin/audit-logs",
             get(handlers::audit_handler::list_audit_logs),
+        )
+        // User management
+        .route("/api/admin/users", get(handlers::admin::list_users))
+        .route(
+            "/api/admin/users/:id/role",
+            axum::routing::put(handlers::admin::update_user_role),
+        )
+        .route(
+            "/api/admin/users/:id",
+            axum::routing::delete(handlers::admin::delete_user),
         )
         .layer(axum_mw::from_fn(auth::require_role(Role::Admin)))
 }

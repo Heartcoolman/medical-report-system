@@ -32,6 +32,11 @@ import type {
   AnalyzeExpenseResp,
   ParsedExpenseDay,
   MergeChunksReq,
+  Medication,
+  CreateMedicationReq,
+  UpdateMedicationReq,
+  TimelineEvent,
+  UserInfo,
 } from './types';
 
 const TOKEN_KEY = 'auth_token'
@@ -320,11 +325,41 @@ export const api = {
     },
   },
 
+  medications: {
+    list(patientId: string) {
+      return request<Medication[]>(`/api/patients/${patientId}/medications`);
+    },
+    create(patientId: string, data: CreateMedicationReq) {
+      return request<Medication>(`/api/patients/${patientId}/medications`, jsonRequest('POST', data));
+    },
+    update(id: string, data: UpdateMedicationReq) {
+      return request<Medication>(`/api/medications/${id}`, jsonRequest('PUT', data));
+    },
+    delete(id: string) {
+      return request<void>(`/api/medications/${id}`, { method: 'DELETE' });
+    },
+  },
+
+  timeline: {
+    get(patientId: string) {
+      return request<TimelineEvent[]>(`/api/patients/${patientId}/timeline`);
+    },
+  },
+
   admin: {
     backfillCanonicalNames() {
       return request<{ updated: number }>('/api/admin/backfill-canonical-names', {
         method: 'POST',
       });
+    },
+    listUsers() {
+      return request<UserInfo[]>('/api/admin/users');
+    },
+    updateUserRole(userId: string, role: string) {
+      return request<void>(`/api/admin/users/${userId}/role`, jsonRequest('PUT', { role }));
+    },
+    deleteUser(userId: string) {
+      return request<void>(`/api/admin/users/${userId}`, { method: 'DELETE' });
     },
   },
 };

@@ -18,11 +18,39 @@ export default defineConfig({
         clientsClaim: true,
         runtimeCaching: [
           {
+            urlPattern: /^\/api\/patients\b/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'patients-cache',
+              expiration: { maxEntries: 100, maxAgeSeconds: 600 },
+              networkTimeoutSeconds: 5,
+            },
+          },
+          {
+            urlPattern: /^\/api\/reports\b/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'reports-cache',
+              expiration: { maxEntries: 200, maxAgeSeconds: 600 },
+              networkTimeoutSeconds: 5,
+            },
+          },
+          {
+            urlPattern: /^\/api\/stats\b/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'stats-cache',
+              expiration: { maxEntries: 10, maxAgeSeconds: 120 },
+              networkTimeoutSeconds: 3,
+            },
+          },
+          {
             urlPattern: /^\/api\//,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
               expiration: { maxEntries: 50, maxAgeSeconds: 300 },
+              networkTimeoutSeconds: 5,
             },
           },
           {
@@ -30,6 +58,14 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'uploads-cache',
+              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
+          },
+          {
+            urlPattern: /\.(js|css|woff2?|png|jpg|svg|ico)$/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'static-assets',
               expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 },
             },
           },

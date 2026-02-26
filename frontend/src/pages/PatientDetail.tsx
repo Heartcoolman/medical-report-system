@@ -6,6 +6,7 @@ import { api } from '@/api/client'
 import ReportUpload from './ReportUpload'
 import ExpenseUpload from './ExpenseUpload'
 import { LlmInterpret } from '@/components/LlmInterpret'
+import { exportAllReportsCSV } from '@/lib/export'
 
 export default function PatientDetail() {
   const params = useParams<{ id: string }>()
@@ -490,6 +491,46 @@ export default function PatientDetail() {
                         >
                           AI 综合解读
                         </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
+                          onClick={() => navigate(`/patients/${params.id}/health-assessment`)}
+                        >
+                          AI 健康评估
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
+                          onClick={() => navigate(`/patients/${params.id}/compare`)}
+                        >
+                          报告对比
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
+                          onClick={() => navigate(`/patients/${params.id}/timeline`)}
+                        >
+                          健康时间线
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
+                          onClick={() => navigate(`/patients/${params.id}/medications`)}
+                        >
+                          用药管理
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          class="w-full"
+                          onClick={() => navigate(`/patients/${params.id}/templates`)}
+                        >
+                          快捷录入
+                        </Button>
                         <div class="flex gap-2">
                           <Button
                             variant="outline"
@@ -625,7 +666,14 @@ export default function PatientDetail() {
                 </Card>
               </div>
 
-              <h2 class="section-title mb-3">检查报告</h2>
+              <div class="flex items-center justify-between mb-3">
+                <h2 class="section-title">检查报告</h2>
+                <Show when={sortedReports().length > 0}>
+                  <Button variant="ghost" size="sm" onClick={() => { const p2 = patient(); if (p2) exportAllReportsCSV(sortedReports(), p2.name) }}>
+                    导出CSV
+                  </Button>
+                </Show>
+              </div>
 
               {/* Summary stats bar */}
               <Show when={!reports.loading && sortedReports().length > 0}>

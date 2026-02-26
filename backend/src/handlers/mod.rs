@@ -1,10 +1,14 @@
+pub mod admin;
 pub mod audit_handler;
 pub mod expense;
+pub mod health_assessment;
 pub mod interpret;
+pub mod medications;
 pub mod normalize;
 pub mod ocr;
 pub mod patients;
 pub mod reports;
+pub mod stats;
 pub mod temperatures;
 pub mod user_settings;
 

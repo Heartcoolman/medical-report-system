@@ -17,6 +17,12 @@ const ExpenseDetail = lazy(() => import('./pages/ExpenseDetail'))
 const Login = lazy(() => import('./pages/Login'))
 const Register = lazy(() => import('./pages/Register'))
 const Settings = lazy(() => import('./pages/Settings'))
+const AdminUsers = lazy(() => import('./pages/AdminUsers'))
+const ReportCompare = lazy(() => import('./pages/ReportCompare'))
+const Timeline = lazy(() => import('./pages/Timeline'))
+const Medications = lazy(() => import('./pages/Medications'))
+const ReportTemplates = lazy(() => import('./pages/ReportTemplates'))
+const HealthAssessment = lazy(() => import('./pages/HealthAssessment'))
 
 // Initialize auth on app load
 initAuth()
@@ -99,6 +105,12 @@ function App() {
             <Route path="/expenses/:id" component={ExpenseDetail} />
             <Route path="/edit-logs" component={EditLogs} />
             <Route path="/settings" component={Settings} />
+            <Route path="/admin/users" component={AdminUsers} />
+            <Route path="/patients/:id/compare" component={ReportCompare} />
+            <Route path="/patients/:id/timeline" component={Timeline} />
+            <Route path="/patients/:id/medications" component={Medications} />
+            <Route path="/patients/:id/templates" component={ReportTemplates} />
+            <Route path="/patients/:id/health-assessment" component={HealthAssessment} />
             <Route path="*" component={NotFound} />
           </Route>
         </Suspense>

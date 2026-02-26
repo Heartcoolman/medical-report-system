@@ -313,6 +313,23 @@ function Breadcrumbs() {
       parts.push({ label: '报告详情' })
     } else if (path === '/settings') {
       parts.push({ label: '用户设置' })
+    } else if (path === '/admin/users') {
+      parts.push({ label: '用户管理' })
+    } else if (path.match(/^\/patients\/[^/]+\/compare$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/compare', '') })
+      parts.push({ label: '报告对比' })
+    } else if (path.match(/^\/patients\/[^/]+\/timeline$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/timeline', '') })
+      parts.push({ label: '健康时间线' })
+    } else if (path.match(/^\/patients\/[^/]+\/medications$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/medications', '') })
+      parts.push({ label: '用药管理' })
+    } else if (path.match(/^\/patients\/[^/]+\/templates$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/templates', '') })
+      parts.push({ label: '快捷录入' })
+    } else if (path.match(/^\/patients\/[^/]+\/health-assessment$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/health-assessment', '') })
+      parts.push({ label: 'AI 健康评估' })
     }
 
     return parts

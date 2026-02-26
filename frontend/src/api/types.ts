@@ -335,6 +335,72 @@ export interface AnalyzeExpenseResp {
   treatment_analysis: string;
 }
 
+// --- Medication ---
+
+export interface Medication {
+  id: string;
+  patient_id: string;
+  name: string;
+  dosage: string;
+  frequency: string;
+  start_date: string;
+  end_date?: string;
+  note: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface CreateMedicationReq {
+  name: string;
+  dosage: string;
+  frequency: string;
+  start_date: string;
+  end_date?: string;
+  note?: string;
+}
+
+export interface UpdateMedicationReq {
+  name?: string;
+  dosage?: string;
+  frequency?: string;
+  start_date?: string;
+  end_date?: string;
+  note?: string;
+  active?: boolean;
+}
+
+// --- Timeline ---
+
+export interface TimelineEvent {
+  event_type: 'report' | 'temperature' | 'expense' | 'medication';
+  event_date: string;
+  title: string;
+  description: string;
+  related_id: string;
+  created_at: string;
+}
+
+// --- Health Assessment ---
+
+export interface HealthAssessment {
+  overall_status: string;
+  risk_level: string;
+  summary: string;
+  findings: string[];
+  recommendations: string[];
+  follow_up_suggestions: string[];
+  disclaimer: string;
+}
+
+// --- Admin ---
+
+export interface UserInfo {
+  id: string;
+  username: string;
+  role: string;
+  created_at: string;
+}
+
 // --- Trends ---
 
 export interface TrendPoint {

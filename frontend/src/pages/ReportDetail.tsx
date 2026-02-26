@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
 import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus } from '@/api/types'
 import { LlmInterpret } from '@/components/LlmInterpret'
+import { exportReportCSV } from '@/lib/export'
 
 export default function ReportDetail() {
   const params = useParams<{ id: string }>()
@@ -319,6 +320,9 @@ export default function ReportDetail() {
                   <Badge variant="accent">{r().report_date}</Badge>
                 </div>
                 <div class="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => { const rr = report(); if (rr) exportReportCSV(rr) }}>
+                    导出CSV
+                  </Button>
                   <Button variant="outline" size="sm" onClick={openEditModal}>
                     编辑
                   </Button>
