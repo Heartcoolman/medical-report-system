@@ -452,102 +452,120 @@ export default function PatientDetail() {
                         </Show>
                       </div>
 
-                      <div class="border-t border-border pt-3 flex flex-col gap-2">
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => setShowUploadModal(true)}
-                        >
-                          上传报告
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => setShowExpenseModal(true)}
-                        >
-                          上传消费清单
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/trends`)}
-                        >
-                          趋势分析
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => {
-                            const list = reports() ?? []
-                            setSelectedReportIds(new Set(list.map(r => r.id)))
-                            setInterpretUrl('')
-                            setInterpretStarted(false)
-                            setShowInterpretModal(true)
-                          }}
-                        >
-                          AI 综合解读
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/health-assessment`)}
-                        >
-                          AI 健康评估
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/compare`)}
-                        >
-                          报告对比
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/timeline`)}
-                        >
-                          健康时间线
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/medications`)}
-                        >
-                          用药管理
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          class="w-full"
-                          onClick={() => navigate(`/patients/${params.id}/templates`)}
-                        >
-                          快捷录入
-                        </Button>
-                        <div class="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            class="flex-1"
-                            onClick={() => navigate(`/patients/${params.id}/edit`)}
-                          >
-                            编辑
-                          </Button>
-                          <Button
-                            variant="danger"
-                            size="sm"
-                            class="flex-1"
-                            onClick={() => setShowDeleteModal(true)}
-                          >
-                            删除
-                          </Button>
+                      <div class="border-t border-border pt-3 flex flex-col gap-3">
+                        {/* 数据录入 */}
+                        <div>
+                          <p class="micro-title mb-1.5">数据录入</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => setShowUploadModal(true)}
+                            >
+                              上传报告
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => setShowExpenseModal(true)}
+                            >
+                              消费清单
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full col-span-2"
+                              onClick={() => navigate(`/patients/${params.id}/templates`)}
+                            >
+                              快捷录入
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* 分析工具 */}
+                        <div>
+                          <p class="micro-title mb-1.5">分析工具</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/trends`)}
+                            >
+                              趋势分析
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/compare`)}
+                            >
+                              报告对比
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => {
+                                const list = reports() ?? []
+                                setSelectedReportIds(new Set(list.map(r => r.id)))
+                                setInterpretUrl('')
+                                setInterpretStarted(false)
+                                setShowInterpretModal(true)
+                              }}
+                            >
+                              AI 综合解读
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/health-assessment`)}
+                            >
+                              AI 健康评估
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/timeline`)}
+                            >
+                              健康时间线
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/medications`)}
+                            >
+                              用药管理
+                            </Button>
+                          </div>
+                        </div>
+
+                        {/* 管理 */}
+                        <div>
+                          <p class="micro-title mb-1.5">管理</p>
+                          <div class="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              class="flex-1"
+                              onClick={() => navigate(`/patients/${params.id}/edit`)}
+                            >
+                              编辑
+                            </Button>
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              class="flex-1"
+                              onClick={() => setShowDeleteModal(true)}
+                            >
+                              删除
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1169,7 +1187,9 @@ export default function PatientDetail() {
               onClose={() => setShowActionSheet(false)}
               title="患者操作"
             >
-              <div class="flex flex-col gap-2 pb-4">
+              <div class="flex flex-col gap-1 pb-4">
+                {/* 数据录入 */}
+                <p class="px-4 pt-1 pb-1 micro-title">数据录入</p>
                 <button
                   class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
                   onClick={() => { setShowActionSheet(false); setShowUploadModal(true) }}
@@ -1200,6 +1220,24 @@ export default function PatientDetail() {
                 </button>
                 <button
                   class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/templates`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-accent-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">快捷录入</div>
+                    <div class="text-xs text-content-secondary">使用模板快速填写报告</div>
+                  </div>
+                </button>
+
+                {/* 分析工具 */}
+                <div class="border-t border-border/50 mx-4 my-1" />
+                <p class="px-4 pt-1 pb-1 micro-title">分析工具</p>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
                   onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/trends`) }}
                 >
                   <div class="w-10 h-10 rounded-full bg-success-light flex items-center justify-center">
@@ -1210,6 +1248,20 @@ export default function PatientDetail() {
                   <div>
                     <div class="font-medium text-content">趋势分析</div>
                     <div class="text-xs text-content-secondary">查看检验指标变化趋势</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/compare`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-success-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">报告对比</div>
+                    <div class="text-xs text-content-secondary">对比两份报告的差异</div>
                   </div>
                 </button>
                 <button
@@ -1233,6 +1285,52 @@ export default function PatientDetail() {
                     <div class="text-xs text-content-secondary">AI 分析所有报告</div>
                   </div>
                 </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/health-assessment`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-info-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-info" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714a2.25 2.25 0 00.659 1.591L19 14.5M14.25 3.104c.251.023.501.05.75.082M19 14.5l-2.47 5.636a2.25 2.25 0 01-2.061 1.364H9.531a2.25 2.25 0 01-2.061-1.364L5 14.5m14 0H5" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">AI 健康评估</div>
+                    <div class="text-xs text-content-secondary">综合评估健康风险</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/timeline`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-success-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">健康时间线</div>
+                    <div class="text-xs text-content-secondary">查看健康事件时间轴</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/medications`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-success-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">用药管理</div>
+                    <div class="text-xs text-content-secondary">管理用药记录</div>
+                  </div>
+                </button>
+
+                {/* 管理 */}
+                <div class="border-t border-border/50 mx-4 my-1" />
+                <p class="px-4 pt-1 pb-1 micro-title">管理</p>
                 <button
                   class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
                   onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/edit`) }}

@@ -218,7 +218,7 @@ export default function ReportDetail() {
   ]
 
   return (
-    <div class="flex flex-col lg:flex-row gap-6">
+    <div class="page-shell flex flex-col lg:flex-row gap-6">
       {/* Left sidebar: report list */}
       <div class="lg:w-64 shrink-0">
         <div class="lg:sticky lg:top-20">

@@ -266,7 +266,7 @@
 
 @layer components {
   .page-shell {
-    @apply px-4 py-8 md:px-6;
+    @apply py-2;
   }
 
   .app-header-link {

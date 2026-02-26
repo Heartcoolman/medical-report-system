@@ -76,7 +76,7 @@ export default function EditLogs() {
   }
 
   return (
-    <div class="max-w-4xl mx-auto space-y-6">
+    <div class="page-shell max-w-4xl mx-auto space-y-6">
       <div class="flex items-center justify-between">
         <h1 class="hero-title">修改日志</h1>
         <Show when={logItems()}>

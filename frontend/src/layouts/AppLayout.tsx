@@ -101,8 +101,16 @@ export default function AppLayout(props: ParentProps) {
   })
 
   const navLinks = [
-    { href: '/', label: '患者管理' },
-    { href: '/edit-logs', label: '修改日志' },
+    {
+      href: '/',
+      label: '患者管理',
+      icon: <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>,
+    },
+    {
+      href: '/edit-logs',
+      label: '修改日志',
+      icon: <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>,
+    },
   ]
 
   const handleLogout = () => {
@@ -136,12 +144,13 @@ export default function AppLayout(props: ParentProps) {
                   <A
                     href={link.href}
                     class={cn(
-                      'nav-link-base',
+                      'nav-link-base flex items-center gap-1.5',
                       isActive(link.href)
                         ? 'nav-link-active'
                         : 'text-content-secondary hover:text-content hover:bg-surface-secondary',
                     )}
                   >
+                    {link.icon}
                     {link.label}
                   </A>
                 ))}
@@ -235,13 +244,14 @@ export default function AppLayout(props: ParentProps) {
                 <A
                   href={link.href}
                   class={cn(
-                    'block nav-link-base',
+                    'flex items-center gap-2 nav-link-base',
                     isActive(link.href)
                       ? 'nav-link-active'
                       : 'text-content-secondary hover:text-content hover:bg-surface-secondary',
                   )}
                   onClick={() => setMobileMenuOpen(false)}
                 >
+                  {link.icon}
                   {link.label}
                 </A>
               ))}
