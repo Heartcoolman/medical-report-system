@@ -157,6 +157,7 @@ export default function ReportUpload(props: ReportUploadProps) {
         .catch((err: any) => {
           toast('error', `解析 ${file.name} 失败: ${err.message}`)
           return {
+            file_id: '',
             file_path: '',
             file_name: file.name,
             parsed: { report_type: '', hospital: '', report_date: '', sample_date: '', items: [] },
