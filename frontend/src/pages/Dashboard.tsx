@@ -105,8 +105,8 @@ export default function Dashboard() {
                                   href={`/reports/${item.report_id}`}
                                   class="text-error/80 hover:text-error hover:underline"
                                 >
-                                  {item.item_name} {item.value}{item.unit}
-                                  {item.status === 'critical_high' ? ' ↑↑' : ' ↓↓'}
+                                  {item.item_name} {item.value} {item.unit}
+                                  {item.status === 'CriticalHigh' ? ' ↑↑' : ' ↓↓'}
                                 </A>
                               </>
                             )}
