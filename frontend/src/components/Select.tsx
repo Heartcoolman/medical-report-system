@@ -22,6 +22,7 @@ export const Select: Component<SelectProps> = (props) => {
     'class',
     'wrapperClass',
     'children',
+    'value',
   ])
 
   const generatedId = `select-${++selectIdCounter}`
@@ -40,6 +41,7 @@ export const Select: Component<SelectProps> = (props) => {
       <div class="relative">
         <select
           {...rest}
+          value={local.value}
           id={selectId()}
           aria-invalid={local.error ? true : undefined}
           aria-describedby={
