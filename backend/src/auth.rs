@@ -274,6 +274,7 @@ pub async fn register(
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.username.trim().is_empty() || req.password.is_empty() {
@@ -307,11 +308,7 @@ pub async fn login(
     }
 
     let token = create_token(&user_id, &req.username.trim(), &role)?;
-
-    let notice = std::fs::read_to_string("data/update_notice.txt")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let notice = check_update_notice(&headers);
 
     Ok(Json(json!({
         "success": true,
@@ -328,12 +325,8 @@ pub async fn login(
     })))
 }
 
-pub async fn get_me(auth: AuthUser) -> impl IntoResponse {
-    let notice = std::fs::read_to_string("data/update_notice.txt")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
+pub async fn get_me(headers: axum::http::HeaderMap, auth: AuthUser) -> impl IntoResponse {
+    let notice = check_update_notice(&headers);
     Json(json!({
         "success": true,
         "data": {
@@ -462,4 +455,71 @@ pub fn require_role(
             }
         })
     }
+}
+
+// --- Update notice helpers ---
+
+/// Decide whether to return an update notice for this request.
+///
+/// Rules (checked in order):
+/// 1. `data/update_notice.txt` non-empty  → return its content (manual ops broadcast, all clients)
+/// 2. Client platform is "web"            → skip version check (web is always in sync with backend)
+/// 3. `data/min_client_version.txt` set   → compare X-Client-Version; if below minimum, return
+///    the standard data-safety warning
+fn check_update_notice(headers: &axum::http::HeaderMap) -> Option<String> {
+    // 1. Manual broadcast overrides everything
+    if let Some(msg) = std::fs::read_to_string("data/update_notice.txt")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return Some(msg);
+    }
+
+    // 2. Web clients are always current — skip version check
+    let platform = headers
+        .get("x-client-platform")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if platform == "web" {
+        return None;
+    }
+
+    // 3. Version-based check for non-web clients (e.g. iOS)
+    let min_ver = std::fs::read_to_string("data/min_client_version.txt")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+
+    let client_ver = headers
+        .get("x-client-version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("0.0.0");
+
+    if version_is_less(client_ver, &min_ver) {
+        Some("检测到新版本，请尽快更新 App，否则可能出现数据丢失或功能异常。".to_string())
+    } else {
+        None
+    }
+}
+
+/// Return true if version string `a` is strictly less than `b`.
+/// Compares dot-separated numeric segments (e.g. "1.0" < "1.1").
+fn version_is_less(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Vec<u32> {
+        s.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+    };
+    let av = parse(a);
+    let bv = parse(b);
+    let len = av.len().max(bv.len());
+    for i in 0..len {
+        let ai = av.get(i).copied().unwrap_or(0);
+        let bi = bv.get(i).copied().unwrap_or(0);
+        match ai.cmp(&bi) {
+            std::cmp::Ordering::Less => return true,
+            std::cmp::Ordering::Greater => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    false
 }

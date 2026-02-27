@@ -44,16 +44,24 @@ import type {
 
 const TOKEN_KEY = 'auth_token'
 
+// Build-time version injected by Vite (from package.json).
+// Web is always deployed with the backend, so the backend skips version checks
+// for platform=web. This header is mainly for future auditing.
+declare const __APP_VERSION__: string
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
+
 async function request<T>(url: string, options?: RequestInit, timeout = 12000): Promise<T> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeout)
 
-  // Inject Authorization header
+  // Inject Authorization header + client identity headers
   const token = localStorage.getItem(TOKEN_KEY)
   const headers = new Headers(options?.headers)
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }
+  headers.set('X-Client-Platform', 'web')
+  headers.set('X-Client-Version', APP_VERSION)
 
   try {
     const res = await fetch(url, {
