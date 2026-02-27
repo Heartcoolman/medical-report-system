@@ -68,10 +68,10 @@ export default defineConfig({
             },
           },
           {
-            urlPattern: /\.(js|css|woff2?|png|jpg|svg|ico)$/,
+            urlPattern: /\.(woff2?|png|jpg|svg|ico)$/,
             handler: 'CacheFirst',
             options: {
-              cacheName: 'static-assets',
+              cacheName: 'static-assets-v2',
               expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 },
             },
           },
