@@ -1,4 +1,4 @@
-import { createSignal, createResource, createMemo, Show, For } from 'solid-js'
+import { createSignal, createResource, createMemo, createEffect, Show, For } from 'solid-js'
 import { useParams, useNavigate, A } from '@solidjs/router'
 import {
   Button, Card, CardBody, CardHeader, Input, Badge, TestItemStatusBadge,
@@ -65,6 +65,30 @@ export default function ReportDetail() {
   const [deleteItemOpen, setDeleteItemOpen] = createSignal(false)
   const [deleteItemTarget, setDeleteItemTarget] = createSignal<TestItem | null>(null)
   const [deleteItemLoading, setDeleteItemLoading] = createSignal(false)
+
+  // Refs for select elements in modals (to set value after Portal renders)
+  let editSelectEl: HTMLSelectElement | undefined
+  let addSelectEl: HTMLSelectElement | undefined
+
+  // Sync select value when edit modal opens or status changes
+  createEffect(() => {
+    const status = editItemForm().status ?? 'normal'
+    if (editItemOpen()) {
+      requestAnimationFrame(() => {
+        if (editSelectEl) editSelectEl.value = status
+      })
+    }
+  })
+
+  // Sync select value when add modal opens
+  createEffect(() => {
+    const status = itemForm().status ?? 'normal'
+    if (addItemOpen()) {
+      requestAnimationFrame(() => {
+        if (addSelectEl) addSelectEl.value = status
+      })
+    }
+  })
 
   function openEditModal() {
     const r = report()
@@ -489,8 +513,8 @@ export default function ReportDetail() {
                   <div class="flex flex-col gap-1.5">
                     <label class="form-label">状态</label>
                     <select
+                      ref={(el) => { editSelectEl = el }}
                       class="form-control-base form-control-select"
-                      value={editItemForm().status ?? 'normal'}
                       onChange={(e) => setEditItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
                     >
                       <option value="critical_high">严重偏高</option>
@@ -557,8 +581,8 @@ export default function ReportDetail() {
                   <div class="flex flex-col gap-1.5">
                     <label class="form-label">状态</label>
                     <select
+                      ref={(el) => { addSelectEl = el }}
                       class="form-control-base form-control-select"
-                      value={itemForm().status}
                       onChange={(e) => setItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
                     >
                       <option value="critical_high">严重偏高</option>
