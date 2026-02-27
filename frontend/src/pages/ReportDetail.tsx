@@ -2,7 +2,7 @@ import { createSignal, createResource, createMemo, Show, For } from 'solid-js'
 import { useParams, useNavigate, A } from '@solidjs/router'
 import {
   Button, Card, CardBody, CardHeader, Input, Badge, TestItemStatusBadge,
-  Modal, Select, Spinner, useToast,
+  Modal, Spinner, useToast,
 } from '@/components'
 import type { TableColumn } from '@/components'
 import { Table } from '@/components'
