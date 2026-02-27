@@ -25,7 +25,7 @@ pub async fn health_assessment(
     let db = state.db.clone();
     let pid = patient_id.clone();
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
-    let patient = patient.ok_or_else(|| AppError::NotFound("患者不存在".to_string()))?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
 
     // Gather all reports with items
     let db = state.db.clone();

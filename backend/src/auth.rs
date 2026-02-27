@@ -1,6 +1,6 @@
 use axum::{
-    extract::{FromRequestParts, State},
-    http::{header, request::Parts, Request, StatusCode},
+    extract::{FromRequestParts, Path, State},
+    http::{header, request::Parts, HeaderMap, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -8,8 +8,9 @@ use axum::{
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Sha256, Digest};
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::AppState;
 
 // --- Role enum for RBAC ---
@@ -89,11 +90,18 @@ fn default_role() -> String {
 pub struct LoginReq {
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub device_type: String,
 }
 
 #[derive(Serialize)]
 pub struct AuthResponse {
     pub token: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
     pub user: UserInfo,
 }
 
@@ -110,7 +118,9 @@ fn get_jwt_secret() -> String {
     std::env::var("JWT_SECRET").expect("环境变量 JWT_SECRET 未设置")
 }
 
-const TOKEN_EXPIRY_HOURS: i64 = 24;
+const ACCESS_TOKEN_EXPIRY_MINUTES: i64 = 15;
+const REFRESH_TOKEN_EXPIRY_DAYS: i64 = 30;
+const REFRESH_GRACE_PERIOD_SECONDS: i64 = 5;
 
 pub fn create_token(user_id: &str, username: &str, role: &str) -> Result<String, AppError> {
     let now = chrono::Utc::now();
@@ -119,14 +129,61 @@ pub fn create_token(user_id: &str, username: &str, role: &str) -> Result<String,
         username: username.to_string(),
         role: role.to_string(),
         iat: now.timestamp() as usize,
-        exp: (now + chrono::Duration::hours(TOKEN_EXPIRY_HOURS)).timestamp() as usize,
+        exp: (now + chrono::Duration::minutes(ACCESS_TOKEN_EXPIRY_MINUTES)).timestamp() as usize,
     };
     encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(get_jwt_secret().as_bytes()),
     )
-    .map_err(|e| AppError::Internal(format!("JWT 生成失败: {}", e)))
+    .map_err(|e| AppError::internal(format!("JWT 生成失败: {}", e)))
+}
+
+/// Generate a cryptographically secure random refresh token (base64url-encoded, 43 chars).
+fn generate_refresh_token() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 32] = rng.gen();
+    base64_url_encode(&bytes)
+}
+
+/// Base64url encode without padding.
+fn base64_url_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
+}
+
+/// Hash a refresh token with SHA-256 for database storage.
+fn hash_refresh_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Extract client IP from headers (X-Forwarded-For, X-Real-IP).
+fn extract_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Infer device type from headers if not explicitly provided.
+fn infer_device_type(headers: &HeaderMap, explicit: &str) -> String {
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    headers
+        .get("x-client-platform")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 pub fn verify_token(token: &str) -> Result<Claims, AppError> {
@@ -136,19 +193,19 @@ pub fn verify_token(token: &str) -> Result<Claims, AppError> {
         &Validation::default(),
     )
     .map(|data| data.claims)
-    .map_err(|e| AppError::Internal(format!("JWT 验证失败: {}", e)))
+    .map_err(|e| AppError::internal(format!("JWT 验证失败: {}", e)))
 }
 
 // --- Password hashing ---
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     bcrypt::hash(password, bcrypt::DEFAULT_COST)
-        .map_err(|e| AppError::Internal(format!("密码哈希失败: {}", e)))
+        .map_err(|e| AppError::internal(format!("密码哈希失败: {}", e)))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
     bcrypt::verify(password, hash)
-        .map_err(|e| AppError::Internal(format!("密码验证失败: {}", e)))
+        .map_err(|e| AppError::internal(format!("密码验证失败: {}", e)))
 }
 
 // --- Axum extractor for JWT auth ---
@@ -174,29 +231,13 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = match auth_header {
             Some(h) if h.starts_with("Bearer ") => &h[7..],
             _ => {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({
-                        "success": false,
-                        "data": null,
-                        "message": "缺少认证令牌"
-                    })),
-                )
-                    .into_response());
+                return Err(AppError::missing_token().into_response());
             }
         };
 
         match verify_token(token) {
             Ok(claims) => Ok(AuthUser(claims)),
-            Err(_) => Err((
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "success": false,
-                    "data": null,
-                    "message": "认证令牌无效或已过期"
-                })),
-            )
-                .into_response()),
+            Err(_) => Err(AppError::invalid_token().into_response()),
         }
     }
 }
@@ -205,19 +246,21 @@ impl FromRequestParts<AppState> for AuthUser {
 
 pub async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<RegisterReq>,
 ) -> Result<impl IntoResponse, AppError> {
     // Validate input
     if req.username.trim().is_empty() || req.username.len() < 3 {
-        return Err(AppError::BadRequest("用户名至少 3 个字符".to_string()));
+        return Err(AppError::validation("用户名至少 3 个字符"));
     }
     if req.password.len() < 6 {
-        return Err(AppError::BadRequest("密码至少 6 个字符".to_string()));
+        return Err(AppError::validation("密码至少 6 个字符"));
     }
     let role = req.role.to_lowercase();
     if !["admin", "doctor", "nurse", "readonly"].contains(&role.as_str()) {
-        return Err(AppError::BadRequest(
-            "角色必须是 admin, doctor, nurse, readonly 之一".to_string(),
+        return Err(AppError::new(
+            ErrorCode::InvalidRole,
+            "角色必须是 admin, doctor, nurse, readonly 之一",
         ));
     }
 
@@ -242,7 +285,7 @@ pub async fn register(
                 .map(|c| c > 0)
                 .unwrap_or(false);
             if exists {
-                return Err(AppError::Conflict("用户名已存在".to_string()));
+                return Err(AppError::new(ErrorCode::AuthUsernameConflict, "用户名已存在"));
             }
             conn.execute(
                 "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -253,14 +296,38 @@ pub async fn register(
     })
     .await?;
 
-    let token = create_token(&user_id, &username, &role)?;
+    let access_token = create_token(&user_id, &username, &role)?;
+
+    // Generate refresh token
+    let raw_refresh = generate_refresh_token();
+    let token_hash = hash_refresh_token(&raw_refresh);
+    let ip = extract_client_ip(&headers);
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let device_type = infer_device_type(&headers, "");
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(REFRESH_TOKEN_EXPIRY_DAYS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let db2 = state.db.clone();
+    let uid2 = user_id.clone();
+    crate::error::run_blocking(move || {
+        db2.create_refresh_token(&uid2, &token_hash, "", &device_type, &ip, &ua, &expires_at)
+    })
+    .await?;
 
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "success": true,
             "data": {
-                "token": token,
+                "token": access_token,
+                "access_token": access_token,
+                "refresh_token": raw_refresh,
+                "expires_in": ACCESS_TOKEN_EXPIRY_MINUTES * 60,
                 "user": {
                     "id": user_id,
                     "username": username,
@@ -274,11 +341,11 @@ pub async fn register(
 
 pub async fn login(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.username.trim().is_empty() || req.password.is_empty() {
-        return Err(AppError::BadRequest("用户名和密码不能为空".to_string()));
+        return Err(AppError::validation("用户名和密码不能为空"));
     }
 
     let username = req.username.trim().to_string();
@@ -298,22 +365,47 @@ pub async fn login(
                     ))
                 },
             )
-            .map_err(|_| AppError::BadRequest("用户名或密码错误".to_string()))
+            .map_err(|_| AppError::invalid_credentials())
         })
     })
     .await?;
 
     if !verify_password(&password, &stored_hash)? {
-        return Err(AppError::BadRequest("用户名或密码错误".to_string()));
+        return Err(AppError::invalid_credentials());
     }
 
-    let token = create_token(&user_id, &req.username.trim(), &role)?;
+    let access_token = create_token(&user_id, &req.username.trim(), &role)?;
     let notice = check_update_notice(&headers);
+
+    // Generate refresh token
+    let raw_refresh = generate_refresh_token();
+    let token_hash = hash_refresh_token(&raw_refresh);
+    let ip = extract_client_ip(&headers);
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let device_name = req.device_name.clone();
+    let device_type = infer_device_type(&headers, &req.device_type);
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(REFRESH_TOKEN_EXPIRY_DAYS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let db2 = state.db.clone();
+    let uid2 = user_id.clone();
+    crate::error::run_blocking(move || {
+        db2.create_refresh_token(&uid2, &token_hash, &device_name, &device_type, &ip, &ua, &expires_at)
+    })
+    .await?;
 
     Ok(Json(json!({
         "success": true,
         "data": {
-            "token": token,
+            "token": access_token,
+            "access_token": access_token,
+            "refresh_token": raw_refresh,
+            "expires_in": ACCESS_TOKEN_EXPIRY_MINUTES * 60,
             "user": {
                 "id": user_id,
                 "username": req.username.trim(),
@@ -325,7 +417,7 @@ pub async fn login(
     })))
 }
 
-pub async fn get_me(headers: axum::http::HeaderMap, auth: AuthUser) -> impl IntoResponse {
+pub async fn get_me(headers: HeaderMap, auth: AuthUser) -> impl IntoResponse {
     let notice = check_update_notice(&headers);
     Json(json!({
         "success": true,
@@ -339,10 +431,250 @@ pub async fn get_me(headers: axum::http::HeaderMap, auth: AuthUser) -> impl Into
     }))
 }
 
+// --- Refresh Token handlers ---
+
+#[derive(Deserialize)]
+pub struct RefreshReq {
+    pub refresh_token: String,
+}
+
+#[derive(Deserialize)]
+pub struct LogoutReq {
+    pub refresh_token: String,
+}
+
+/// POST /api/auth/refresh — exchange a valid refresh token for new access + refresh tokens.
+pub async fn refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RefreshReq>,
+) -> Result<impl IntoResponse, AppError> {
+    let token_hash = hash_refresh_token(&req.refresh_token);
+
+    let db = state.db.clone();
+    let hash_clone = token_hash.clone();
+    let token_row = crate::error::run_blocking(move || {
+        db.find_by_token_hash(&hash_clone)
+    })
+    .await?;
+
+    let token_row = match token_row {
+        Some(row) => row,
+        None => return Err(AppError::new(ErrorCode::AuthInvalidToken, "Refresh Token 无效或已过期")),
+    };
+
+    // Check if token is expired
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if token_row.expires_at < now {
+        return Err(AppError::new(ErrorCode::AuthInvalidToken, "Refresh Token 已过期"));
+    }
+
+    // Check if token has been revoked (potential replay attack)
+    if token_row.revoked {
+        // Check grace period for concurrent refresh requests
+        let revoke_time = chrono::NaiveDateTime::parse_from_str(&token_row.last_used_at, "%Y-%m-%d %H:%M:%S")
+            .unwrap_or_else(|_| chrono::Utc::now().naive_utc());
+        let elapsed = chrono::Utc::now().naive_utc().signed_duration_since(revoke_time).num_seconds();
+
+        if elapsed <= REFRESH_GRACE_PERIOD_SECONDS {
+            // Within grace period — likely concurrent refresh, not replay attack.
+            // Return a fresh access token using the user info from this token row.
+            let db3 = state.db.clone();
+            let uid = token_row.user_id.clone();
+            let user_info = crate::error::run_blocking(move || {
+                db3.with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT username, role FROM users WHERE id = ?1",
+                        rusqlite::params![uid],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .map_err(|_| AppError::new(ErrorCode::AuthInvalidToken, "用户不存在"))
+                })
+            })
+            .await?;
+
+            let new_access = create_token(&token_row.user_id, &user_info.0, &user_info.1)?;
+            // Generate new refresh token
+            let new_raw_refresh = generate_refresh_token();
+            let new_hash = hash_refresh_token(&new_raw_refresh);
+            let ip = extract_client_ip(&headers);
+            let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let expires_at = (chrono::Utc::now() + chrono::Duration::days(REFRESH_TOKEN_EXPIRY_DAYS))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            let db4 = state.db.clone();
+            let uid2 = token_row.user_id.clone();
+            let dn = token_row.device_name.clone();
+            let dt = token_row.device_type.clone();
+            crate::error::run_blocking(move || {
+                db4.create_refresh_token(&uid2, &new_hash, &dn, &dt, &ip, &ua, &expires_at)
+            })
+            .await?;
+
+            return Ok(Json(json!({
+                "success": true,
+                "data": {
+                    "access_token": new_access,
+                    "refresh_token": new_raw_refresh,
+                    "token": new_access,
+                    "expires_in": ACCESS_TOKEN_EXPIRY_MINUTES * 60,
+                },
+                "message": "刷新成功"
+            })));
+        }
+
+        // Beyond grace period — replay attack detected. Revoke entire token family.
+        let db_revoke = state.db.clone();
+        let start_id = token_row.id.clone();
+        crate::error::run_blocking(move || {
+            db_revoke.revoke_token_family(&start_id)
+        })
+        .await?;
+
+        tracing::warn!(
+            "Replay attack detected: revoked refresh token {} for user {}",
+            token_row.id,
+            token_row.user_id
+        );
+
+        return Err(AppError::new(ErrorCode::AuthInvalidToken, "Refresh Token 已被使用，为安全起见已撤销所有相关会话"));
+    }
+
+    // Token is valid — fetch user info
+    let db2 = state.db.clone();
+    let uid = token_row.user_id.clone();
+    let (username, role) = crate::error::run_blocking(move || {
+        db2.with_conn(|conn| {
+            conn.query_row(
+                "SELECT username, role FROM users WHERE id = ?1",
+                rusqlite::params![uid],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|_| AppError::new(ErrorCode::AuthInvalidToken, "用户不存在"))
+        })
+    })
+    .await?;
+
+    // Generate new tokens
+    let new_access = create_token(&token_row.user_id, &username, &role)?;
+    let new_raw_refresh = generate_refresh_token();
+    let new_hash = hash_refresh_token(&new_raw_refresh);
+    let ip = extract_client_ip(&headers);
+    let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(REFRESH_TOKEN_EXPIRY_DAYS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let db3 = state.db.clone();
+    let old_id = token_row.id.clone();
+    let uid2 = token_row.user_id.clone();
+    let dn = token_row.device_name.clone();
+    let dt = token_row.device_type.clone();
+    let new_token_id = crate::error::run_blocking(move || {
+        // Create new refresh token first
+        let new_id = db3.create_refresh_token(&uid2, &new_hash, &dn, &dt, &ip, &ua, &expires_at)?;
+        // Revoke old and link to new
+        db3.revoke_and_replace(&old_id, &new_id)?;
+        // Update last_used_at on the old token (for grace period tracking)
+        db3.update_refresh_token_last_used(&old_id)?;
+        Ok(new_id)
+    })
+    .await?;
+
+    let _ = new_token_id; // used only inside the blocking closure
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "access_token": new_access,
+            "refresh_token": new_raw_refresh,
+            "token": new_access,
+            "expires_in": ACCESS_TOKEN_EXPIRY_MINUTES * 60,
+        },
+        "message": "刷新成功"
+    })))
+}
+
+/// POST /api/auth/logout — revoke the given refresh token.
+pub async fn logout(
+    State(state): State<AppState>,
+    Json(req): Json<LogoutReq>,
+) -> Result<impl IntoResponse, AppError> {
+    let token_hash = hash_refresh_token(&req.refresh_token);
+
+    let db = state.db.clone();
+    crate::error::run_blocking(move || {
+        if let Some(row) = db.find_by_token_hash(&token_hash)? {
+            db.revoke_token(&row.id)?;
+        }
+        // Always return success (idempotent)
+        Ok(())
+    })
+    .await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": null,
+        "message": "已登出"
+    })))
+}
+
+/// GET /api/auth/devices — list active sessions for the current user.
+/// Uses AuthUser extractor for authentication (independent of middleware skip).
+pub async fn list_devices(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth.0.sub.clone();
+
+    let db = state.db.clone();
+    let sessions = crate::error::run_blocking(move || {
+        db.list_active_sessions(&user_id)
+    })
+    .await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": sessions,
+        "message": "ok"
+    })))
+}
+
+/// DELETE /api/auth/devices/:id — revoke a specific device session.
+/// Uses AuthUser extractor for authentication.
+pub async fn revoke_device(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(session_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let user_id = auth.0.sub.clone();
+
+    let db = state.db.clone();
+    crate::error::run_blocking(move || {
+        let row = db.find_refresh_token_by_id_and_user(&session_id, &user_id)?;
+        match row {
+            Some(r) if !r.revoked => {
+                db.revoke_token(&r.id)?;
+                Ok(())
+            }
+            _ => Err(AppError::new(ErrorCode::AuthInvalidToken, "设备会话不存在或已失效")),
+        }
+    })
+    .await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": null,
+        "message": "设备已登出"
+    })))
+}
+
 // --- JWT auth middleware (layer-based) ---
 
 /// Middleware that enforces JWT authentication on all requests.
-/// Skips /api/auth/* and /api/health.
+/// Runs inside `nest("/api/v1", ...)` and `nest("/api", ...)`, so the path
+/// seen here is already stripped of the nest prefix.
+/// Skips /auth/* and /health (public endpoints).
 /// On success, injects Claims into request extensions for downstream handlers.
 pub async fn jwt_auth_middleware(
     request: Request<axum::body::Body>,
@@ -350,13 +682,15 @@ pub async fn jwt_auth_middleware(
 ) -> Response {
     let path = request.uri().path().to_string();
 
-    // Skip auth for public endpoints
-    if path.starts_with("/api/auth") || path == "/api/health" {
-        return next.run(request).await;
-    }
+    // Normalize path: strip /api/v1 or /api prefix if still present
+    // (safety net for both nested and non-nested scenarios)
+    let api_path = path
+        .strip_prefix("/api/v1")
+        .or_else(|| path.strip_prefix("/api"))
+        .unwrap_or(&path);
 
-    // Skip auth for non-API routes (static files, SPA, uploads)
-    if !path.starts_with("/api/") {
+    // Skip auth for public endpoints
+    if api_path.starts_with("/auth") || api_path == "/health" {
         return next.run(request).await;
     }
 
@@ -369,15 +703,7 @@ pub async fn jwt_auth_middleware(
     let token = match auth_header.as_deref() {
         Some(h) if h.starts_with("Bearer ") => &h[7..],
         _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "success": false,
-                    "data": null,
-                    "message": "缺少认证令牌"
-                })),
-            )
-                .into_response();
+            return AppError::missing_token().into_response();
         }
     };
 
@@ -387,15 +713,7 @@ pub async fn jwt_auth_middleware(
             request.extensions_mut().insert(claims);
             next.run(request).await
         }
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "success": false,
-                "data": null,
-                "message": "认证令牌无效或已过期"
-            })),
-        )
-            .into_response(),
+        Err(_) => AppError::invalid_token().into_response(),
     }
 }
 
@@ -426,31 +744,11 @@ pub fn require_role(
                     if user_role.has_at_least(minimum_role) {
                         next.run(request).await
                     } else {
-                        (
-                            StatusCode::FORBIDDEN,
-                            Json(json!({
-                                "success": false,
-                                "data": null,
-                                "message": format!(
-                                    "权限不足: 需要 {} 或更高角色",
-                                    minimum_role.as_str()
-                                )
-                            })),
-                        )
-                            .into_response()
+                        AppError::insufficient_role(minimum_role.as_str()).into_response()
                     }
                 }
                 None => {
-                    // No claims = not authenticated (shouldn't happen if jwt_auth_middleware ran)
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        Json(json!({
-                            "success": false,
-                            "data": null,
-                            "message": "未认证"
-                        })),
-                    )
-                        .into_response()
+                    AppError::missing_token().into_response()
                 }
             }
         })
@@ -466,7 +764,7 @@ pub fn require_role(
 /// 2. Client platform is "web"            → skip version check (web is always in sync with backend)
 /// 3. `data/min_client_version.txt` set   → compare X-Client-Version; if below minimum, return
 ///    the standard data-safety warning
-fn check_update_notice(headers: &axum::http::HeaderMap) -> Option<String> {
+fn check_update_notice(headers: &HeaderMap) -> Option<String> {
     // 1. Manual broadcast overrides everything
     if let Some(msg) = std::fs::read_to_string("data/update_notice.txt")
         .ok()

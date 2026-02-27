@@ -16,7 +16,7 @@ pub async fn create_patient(
     Json(req): Json<PatientReq>,
 ) -> Result<Json<ApiResponse<Patient>>, AppError> {
     if let Err(msg) = req.validate() {
-        return Err(AppError::BadRequest(msg));
+        return Err(AppError::validation(msg));
     }
     let now = Utc::now().to_rfc3339();
     let patient = Patient {
@@ -56,7 +56,7 @@ pub async fn get_patient(
     let result = run_blocking(move || db.get_patient(&id_clone)).await?;
     match result {
         Some(p) => Ok(Json(ApiResponse::ok(p, "查询成功"))),
-        None => Err(AppError::NotFound("患者不存在".to_string())),
+        None => Err(AppError::patient_not_found()),
     }
 }
 
@@ -99,7 +99,7 @@ pub async fn update_patient(
     Json(req): Json<PatientReq>,
 ) -> Result<Json<ApiResponse<Patient>>, AppError> {
     if let Err(msg) = req.validate() {
-        return Err(AppError::BadRequest(msg));
+        return Err(AppError::validation(msg));
     }
     let now = Utc::now().to_rfc3339();
     let db = state.db.clone();
@@ -134,7 +134,7 @@ pub async fn update_patient(
 
             Ok(Json(ApiResponse::ok(patient, "更新成功")))
         }
-        None => Err(AppError::NotFound("患者不存在".to_string())),
+        None => Err(AppError::patient_not_found()),
     }
 }
 

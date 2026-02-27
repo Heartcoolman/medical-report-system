@@ -18,7 +18,7 @@ export default function ReportCompare() {
   const params = useParams<{ id: string }>()
   const [reports] = createResource(
     () => params.id,
-    (patientId) => api.reports.listByPatient(patientId),
+    (patientId) => api.reports.listByPatient(patientId, { page_size: 100 }).then(r => r.items),
   )
 
   const [leftId, setLeftId] = createSignal('')

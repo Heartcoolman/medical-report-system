@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
-use crate::error::{run_blocking, AppError};
+use crate::error::{run_blocking, AppError, ErrorCode};
 use crate::models::{
-    ApiResponse, CreateReportReq, CreateTestItemReq, EditLog, FieldChange, PaginatedList, Report,
-    ReportDetail, ReportSummary, TestItem, TrendItemInfo, TrendPoint, UpdateTestItemReq,
+    ApiResponse, CreateReportReq, CreateTestItemReq, EditLog, FieldChange, PaginatedList,
+    PaginationParams, Report, ReportDetail, ReportSummary, TestItem, TrendItemInfo, TrendPoint,
+    UpdateTestItemReq,
 };
 use crate::AppState;
 
@@ -29,14 +30,14 @@ pub async fn create_report(
     Json(req): Json<CreateReportReq>,
 ) -> Result<Json<ApiResponse<Report>>, AppError> {
     if let Err(msg) = req.validate() {
-        return Err(AppError::BadRequest(msg));
+        return Err(AppError::validation(msg));
     }
     // Verify patient exists
     let db = state.db.clone();
     let pid = patient_id.clone();
     let exists = run_blocking(move || db.get_patient(&pid)).await?;
     if exists.is_none() {
-        return Err(AppError::NotFound("患者不存在".to_string()));
+        return Err(AppError::patient_not_found());
     }
     let report = Report {
         id: Uuid::new_v4().to_string(),
@@ -72,18 +73,20 @@ pub async fn get_report_detail(
             };
             Ok(Json(ApiResponse::ok(detail, "查询成功")))
         }
-        None => Err(AppError::NotFound("报告不存在".to_string())),
+        None => Err(AppError::report_not_found()),
     }
 }
 
 pub async fn list_reports_by_patient(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
-) -> Result<Json<ApiResponse<Vec<ReportSummary>>>, AppError> {
+    Query(pagination): Query<PaginationParams>,
+) -> Result<Json<ApiResponse<PaginatedList<ReportSummary>>>, AppError> {
+    let (page, page_size) = pagination.normalize();
     let db = state.db.clone();
-    let summaries =
-        run_blocking(move || db.list_reports_with_summary_by_patient(&patient_id)).await?;
-    Ok(Json(ApiResponse::ok(summaries, "查询成功")))
+    let result =
+        run_blocking(move || db.list_reports_with_summary_by_patient_paginated(&patient_id, page, page_size)).await?;
+    Ok(Json(ApiResponse::ok(result, "查询成功")))
 }
 
 pub async fn delete_report_handler(
@@ -181,7 +184,7 @@ pub async fn update_report(
             }
             Ok(Json(ApiResponse::ok(report, "更新成功")))
         }
-        None => Err(AppError::NotFound("报告不存在".to_string())),
+        None => Err(AppError::report_not_found()),
     }
 }
 
@@ -194,7 +197,7 @@ pub async fn create_test_item(
     let db = state.db.clone();
     let rid = req.report_id.clone();
     let report = run_blocking(move || db.get_report(&rid)).await?;
-    let report = report.ok_or_else(|| AppError::NotFound("报告不存在".to_string()))?;
+    let report = report.ok_or_else(|| AppError::report_not_found())?;
 
     let item = TestItem {
         id: Uuid::new_v4().to_string(),
@@ -248,7 +251,7 @@ pub async fn get_trends(
 ) -> Result<Json<ApiResponse<Vec<TrendPoint>>>, AppError> {
     let item_name = match params.get("item_name") {
         Some(name) => name.clone(),
-        None => return Err(AppError::BadRequest("缺少 item_name 参数".to_string())),
+        None => return Err(AppError::new(ErrorCode::MissingParameter, "缺少 item_name 参数")),
     };
     let report_type = params.get("report_type").cloned();
     let db = state.db.clone();
@@ -276,7 +279,7 @@ pub async fn update_test_item(
     let db = state.db.clone();
     let id_clone = id.clone();
     let old_item = run_blocking(move || db.get_test_item(&id_clone)).await?;
-    let old_item = old_item.ok_or_else(|| AppError::NotFound("检验项目不存在".to_string()))?;
+    let old_item = old_item.ok_or_else(|| AppError::test_item_not_found())?;
 
     let mut item = old_item.clone();
     let mut changes = Vec::new();
@@ -379,7 +382,7 @@ pub async fn delete_test_item_handler(
     let db = state.db.clone();
     let id_clone = id.clone();
     let item = run_blocking(move || db.get_test_item(&id_clone)).await?;
-    let item = item.ok_or_else(|| AppError::NotFound("检验项目不存在".to_string()))?;
+    let item = item.ok_or_else(|| AppError::test_item_not_found())?;
 
     // Get report for patient_id
     let db = state.db.clone();

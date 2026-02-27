@@ -28,12 +28,12 @@ impl Database {
                     continue;
                 }
                 let enc_phone = if phone_needs {
-                    crypto::encrypt_field(phone).map_err(|e| AppError::Internal(e))?
+                    crypto::encrypt_field(phone).map_err(|e| AppError::internal(e))?
                 } else {
                     phone.clone()
                 };
                 let enc_id = if id_needs {
-                    crypto::encrypt_field(id_number).map_err(|e| AppError::Internal(e))?
+                    crypto::encrypt_field(id_number).map_err(|e| AppError::internal(e))?
                 } else {
                     id_number.clone()
                 };
@@ -105,7 +105,7 @@ impl Database {
                 ],
             )?;
             if affected == 0 {
-                return Err(AppError::NotFound("患者不存在".to_string()));
+                return Err(AppError::patient_not_found());
             }
             upsert_search_index(conn, patient)?;
             Ok(())
@@ -117,7 +117,7 @@ impl Database {
             let tx = conn.transaction()?;
             let affected = tx.execute("DELETE FROM patients WHERE id = ?1", params![id])?;
             if affected == 0 {
-                return Err(AppError::NotFound("患者不存在".to_string()));
+                return Err(AppError::patient_not_found());
             }
             tx.commit()?;
             Ok(())

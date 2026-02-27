@@ -28,7 +28,7 @@ export default function Dashboard() {
     (params) => api.patients.list({ search: params.search || undefined, page: params.page, page_size: 12 }),
   )
 
-  const [criticalAlerts] = createResource(() => api.stats.criticalAlerts().catch(() => [] as CriticalAlert[]))
+  const [criticalAlerts] = createResource(() => api.stats.criticalAlerts({ page_size: 100 }).then(r => r.items).catch(() => [] as CriticalAlert[]))
   const [alertsDismissed, setAlertsDismissed] = createSignal(false)
 
   const groupedAlerts = createMemo(() => {

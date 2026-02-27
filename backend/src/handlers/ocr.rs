@@ -1,5 +1,7 @@
 use axum::{
     extract::{Multipart, Path, State},
+    http::header,
+    response::IntoResponse,
     Json,
 };
 use chrono::Utc;
@@ -7,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
-use crate::error::AppError;
-use crate::models::{ApiResponse, ItemStatus, Report, ReportDetail, TestItem};
+use crate::error::{AppError, ErrorCode};
+use crate::models::{ApiResponse, FileUploadResult, ItemStatus, Report, ReportDetail, TestItem};
 
 fn parse_item_status(s: &str) -> ItemStatus {
     match s.trim().to_lowercase().as_str() {
@@ -24,7 +26,7 @@ use crate::AppState;
 
 const UPLOADS_DIR: &str = "uploads";
 
-async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String), AppError> {
+async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String, usize), AppError> {
     match multipart.next_field().await {
         Ok(Some(field)) => {
             let fname = field
@@ -34,16 +36,16 @@ async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String),
 
             // Validate file extension
             crate::middleware::validate_file_extension(&fname)
-                .map_err(AppError::BadRequest)?;
+                .map_err(|e| AppError::new(ErrorCode::FileTypeNotAllowed, e))?;
 
             let data = field
                 .bytes()
                 .await
-                .map_err(|e| AppError::BadRequest(format!("读取上传数据失败: {}", e)))?;
+                .map_err(|e| AppError::new(ErrorCode::UploadReadFailed, format!("读取上传数据失败: {}", e)))?;
 
             // Validate file size (defense in depth, DefaultBodyLimit also enforces this)
             if data.len() > crate::middleware::MAX_UPLOAD_SIZE {
-                return Err(AppError::BadRequest(format!(
+                return Err(AppError::new(ErrorCode::FileTooLarge, format!(
                     "文件大小 {} 超过限制 {}MB",
                     data.len(),
                     crate::middleware::MAX_UPLOAD_SIZE / 1024 / 1024
@@ -52,31 +54,83 @@ async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String),
 
             // Validate file type via magic bytes
             let detected_ext = crate::middleware::validate_file_magic_bytes(&data)
-                .map_err(AppError::BadRequest)?;
+                .map_err(|e| AppError::new(ErrorCode::FileTypeNotAllowed, e))?;
 
             // Generate safe random filename to prevent path traversal
             let safe_name = crate::middleware::generate_safe_filename(detected_ext);
             let path = format!("{}/{}", UPLOADS_DIR, safe_name);
+            let size = data.len();
 
             tokio::fs::write(&path, &data)
                 .await
-                .map_err(|e| AppError::Internal(format!("写入文件失败: {}", e)))?;
-            Ok((path, fname))
+                .map_err(|e| AppError::internal(format!("写入文件失败: {}", e)))?;
+            Ok((path, fname, size))
         }
-        Ok(None) => Err(AppError::BadRequest("未找到上传文件".to_string())),
-        Err(e) => Err(AppError::BadRequest(format!("读取上传字段失败: {}", e))),
+        Ok(None) => Err(AppError::new(ErrorCode::UploadEmpty, "未找到上传文件")),
+        Err(e) => Err(AppError::new(ErrorCode::UploadReadFailed, format!("读取上传字段失败: {}", e))),
     }
 }
 
-pub async fn upload_file(mut multipart: Multipart) -> Result<Json<ApiResponse<String>>, AppError> {
-    let (path, _) = save_upload_file(&mut multipart).await?;
-    Ok(Json(ApiResponse::ok(path, "上传成功")))
+fn mime_type_from_path(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+pub async fn upload_file(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<FileUploadResult>>, AppError> {
+    let (path, original_name, size) = save_upload_file(&mut multipart).await?;
+
+    // Extract safe_name from the path (strip "uploads/" prefix)
+    let safe_name = path
+        .strip_prefix(&format!("{}/", UPLOADS_DIR))
+        .unwrap_or(&path)
+        .to_string();
+
+    let file_id = Uuid::new_v4().to_string();
+    let mime_type = mime_type_from_path(&path).to_string();
+
+    let db = state.db.clone();
+    let fid = file_id.clone();
+    let sn = safe_name.clone();
+    let on = original_name.clone();
+    let mt = mime_type.clone();
+    tokio::task::spawn_blocking(move || {
+        db.insert_uploaded_file(&fid, &on, &sn, &mt, size, false)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
+
+    Ok(Json(ApiResponse::ok(
+        FileUploadResult {
+            file_id: file_id.clone(),
+            url: format!("/api/files/{}", file_id),
+            original_name,
+            mime_type,
+            size,
+        },
+        "上传成功",
+    )))
 }
 
 /// OCR parse only - returns parsed report data without creating any records
 /// Used for preview/review before confirming
 #[derive(Serialize)]
 pub struct OcrParseResult {
+    pub file_id: String,
     pub file_path: String,
     pub file_name: String,
     pub parsed: ParsedReport,
@@ -88,7 +142,7 @@ pub async fn ocr_parse(
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<OcrParseResult>>, AppError> {
     let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
-    let (file_path, file_name) = save_upload_file(&mut multipart).await?;
+    let (file_path, file_name, size) = save_upload_file(&mut multipart).await?;
     let client = state.http_client.clone();
 
     let lower = file_path.to_lowercase();
@@ -99,8 +153,8 @@ pub async fn ocr_parse(
 
     if !is_supported {
         let _ = tokio::fs::remove_file(&file_path).await;
-        return Err(AppError::BadRequest(
-            "不支持的文件格式，请上传 PDF 或图片文件".to_string(),
+        return Err(AppError::new(ErrorCode::FileTypeNotAllowed,
+            "不支持的文件格式，请上传 PDF 或图片文件",
         ));
     }
 
@@ -114,17 +168,17 @@ pub async fn ocr_parse(
             // Fallback: for images, try Tesseract OCR + regex; for PDF, no fallback
             if lower.ends_with(".pdf") {
                 let _ = tokio::fs::remove_file(&file_path).await;
-                return Err(AppError::Internal(format!("PDF 识别失败: {}", e)));
+                return Err(AppError::new(ErrorCode::OcrFailed, format!("PDF 识别失败: {}", e)));
             }
             let fp2 = file_path.clone();
             match tokio::task::spawn_blocking(move || crate::ocr::image::extract_image_text(&fp2))
                 .await
-                .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))?
+                .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))?
             {
                 Ok(text) => crate::ocr::parser::parse_report_text(&text),
                 Err(e2) => {
                     let _ = tokio::fs::remove_file(&file_path).await;
-                    return Err(AppError::Internal(format!(
+                    return Err(AppError::new(ErrorCode::OcrFailed, format!(
                         "识别失败: {}; OCR也失败: {}",
                         e, e2
                     )));
@@ -133,17 +187,62 @@ pub async fn ocr_parse(
         }
     };
 
-    // OCR 识别完成，删除临时上传文件
-    let _ = tokio::fs::remove_file(&file_path).await;
+    // OCR 识别完成，保存元数据（标记为临时文件，后续可定期清理）
+    let safe_name = file_path
+        .strip_prefix(&format!("{}/", UPLOADS_DIR))
+        .unwrap_or(&file_path)
+        .to_string();
+    let file_id = Uuid::new_v4().to_string();
+    let mime_type = mime_type_from_path(&file_path).to_string();
+
+    let db = state.db.clone();
+    let fid = file_id.clone();
+    let sn = safe_name.clone();
+    let on = file_name.clone();
+    let mt = mime_type.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        db.insert_uploaded_file(&fid, &on, &sn, &mt, size, true)
+    })
+    .await;
 
     Ok(Json(ApiResponse::ok(
         OcrParseResult {
+            file_id,
             file_path,
             file_name,
             parsed,
         },
         "解析成功",
     )))
+}
+
+pub async fn serve_file(
+    State(state): State<AppState>,
+    Path(file_id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let db = state.db.clone();
+    let fid = file_id.clone();
+    let row = tokio::task::spawn_blocking(move || db.get_uploaded_file(&fid))
+        .await
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
+
+    let file_path = format!("{}/{}", UPLOADS_DIR, row.safe_name);
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| AppError::internal(format!("读取文件失败: {}", e)))?;
+
+    let content_disposition = format!(
+        "inline; filename=\"{}\"",
+        row.original_name.replace('"', "\\\"")
+    );
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, row.mime_type),
+            (header::CONTENT_DISPOSITION, content_disposition),
+        ],
+        data,
+    ))
 }
 
 /// Suggest merge groups using algorithm engine
@@ -224,7 +323,7 @@ pub async fn suggest_groups(
         let pid_clone = pid.clone();
         tokio::task::spawn_blocking(move || db.list_reports_with_item_names_by_patient(&pid_clone))
             .await
-            .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??
+            .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??
     } else {
         Vec::new()
     };
@@ -724,7 +823,7 @@ pub async fn merge_check(
     let existing_reports =
         tokio::task::spawn_blocking(move || db.list_reports_with_item_names_by_patient(&pid))
             .await
-            .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+            .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     if existing_reports.is_empty() {
         tracing::info!(
@@ -911,18 +1010,18 @@ pub async fn batch_confirm(
     // Validate inputs upfront (no DB needed)
     for report_req in &req.reports {
         if report_req.report_type.trim().is_empty() {
-            return Err(AppError::BadRequest("报告类型不能为空".to_string()));
+            return Err(AppError::validation("报告类型不能为空"));
         }
         if report_req.report_date.trim().is_empty() {
-            return Err(AppError::BadRequest("报告日期不能为空".to_string()));
+            return Err(AppError::validation("报告日期不能为空"));
         }
         if let Err(msg) = crate::models::validate_date(&report_req.report_date, "报告日期") {
-            return Err(AppError::BadRequest(msg));
+            return Err(AppError::validation(msg));
         }
         if !report_req.sample_date.trim().is_empty() {
             if let Err(msg) = crate::models::validate_date(&report_req.sample_date, "检查日期")
             {
-                return Err(AppError::BadRequest(msg));
+                return Err(AppError::validation(msg));
             }
         }
     }
@@ -1053,7 +1152,7 @@ pub async fn batch_confirm(
                 db.list_reports_with_item_names_by_patient(&pid)
             })
             .await
-            .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+            .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
             if !existing_reports.is_empty() {
                 let new_items_owned: Vec<Vec<String>> = new_report_indices
@@ -1113,7 +1212,7 @@ pub async fn batch_confirm(
     let batch_results =
         tokio::task::spawn_blocking(move || db.batch_create_reports_and_items(&pid, inputs))
             .await
-            .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+            .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     let results: Vec<ReportDetail> = batch_results
         .into_iter()

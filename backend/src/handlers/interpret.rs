@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use tokio_stream::Stream;
 
 use crate::auth::AuthUser;
-use crate::error::{run_blocking, AppError};
+use crate::error::{run_blocking, AppError, ErrorCode};
 use crate::AppState;
 
 use super::{INTERPRET_API_URL, INTERPRET_MODEL};
@@ -261,7 +261,7 @@ pub async fn interpret_single_report(
     let db = state.db.clone();
     let id_clone = id.clone();
     let report = run_blocking(move || db.get_report(&id_clone)).await?;
-    let report = report.ok_or_else(|| AppError::NotFound("报告不存在".to_string()))?;
+    let report = report.ok_or_else(|| AppError::report_not_found())?;
 
     // Load patient info for personalized interpretation
     let db = state.db.clone();
@@ -323,14 +323,14 @@ pub async fn interpret_multi(
         .collect();
 
     if ids.is_empty() {
-        return Err(AppError::BadRequest("缺少 report_ids 参数".to_string()));
+        return Err(AppError::new(ErrorCode::MissingParameter, "缺少 report_ids 参数"));
     }
 
     // Load patient info
     let db = state.db.clone();
     let pid = patient_id.clone();
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
-    let patient = patient.ok_or_else(|| AppError::NotFound("患者不存在".to_string()))?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
 
     let mut report_blocks = Vec::new();
     for id in &ids {
@@ -345,7 +345,7 @@ pub async fn interpret_multi(
     }
 
     if report_blocks.is_empty() {
-        return Err(AppError::NotFound("未找到指定报告".to_string()));
+        return Err(AppError::new(ErrorCode::NoData, "未找到指定报告"));
     }
 
     let prompt = format!(
@@ -380,14 +380,14 @@ pub async fn interpret_all(
     let db = state.db.clone();
     let pid = patient_id.clone();
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
-    let patient = patient.ok_or_else(|| AppError::NotFound("患者不存在".to_string()))?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
 
     let db = state.db.clone();
     let pid = patient_id.clone();
     let reports = run_blocking(move || db.list_reports_by_patient(&pid)).await?;
 
     if reports.is_empty() {
-        return Err(AppError::NotFound("该患者暂无报告".to_string()));
+        return Err(AppError::new(ErrorCode::NoData, "该患者暂无报告"));
     }
 
     let mut report_blocks = Vec::new();
@@ -441,7 +441,7 @@ pub async fn interpret_trend(
     let points = run_blocking(move || db.get_trends(&pid, &name, rt.as_deref())).await?;
 
     if points.is_empty() {
-        return Err(AppError::NotFound("暂无趋势数据".to_string()));
+        return Err(AppError::new(ErrorCode::NoData, "暂无趋势数据"));
     }
 
     let prompt = format!(
@@ -472,8 +472,8 @@ pub async fn interpret_trend_time(
     let points = run_blocking(move || db.get_trends(&pid, &name, rt.as_deref())).await?;
 
     if points.len() < 2 {
-        return Err(AppError::BadRequest(
-            "至少需要2个数据点才能进行时间变化分析".to_string(),
+        return Err(AppError::new(ErrorCode::InsufficientData,
+            "至少需要2个数据点才能进行时间变化分析",
         ));
     }
 

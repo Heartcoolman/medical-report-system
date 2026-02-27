@@ -112,7 +112,16 @@ export interface CreateTestItemReq {
 
 // --- OCR ---
 
+export interface FileUploadResult {
+  file_id: string;
+  url: string;
+  original_name: string;
+  mime_type: string;
+  size: number;
+}
+
 export interface OcrParseResult {
+  file_id: string;
   file_path: string;
   file_name: string;
   parsed: ParsedReport;
@@ -429,6 +438,17 @@ export interface CriticalAlert {
   unit: string;
   reference_range: string;
   status: 'critical_high' | 'critical_low';
+}
+
+// --- Device Session ---
+
+export interface DeviceSession {
+  id: string;
+  device_name: string;
+  device_type: string;
+  ip_address: string;
+  created_at: string;
+  last_used_at: string;
 }
 
 // --- Trends ---

@@ -4,7 +4,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::error::{run_blocking, AppError};
+use crate::error::{run_blocking, AppError, ErrorCode};
 use crate::models::ApiResponse;
 use crate::AppState;
 
@@ -28,7 +28,7 @@ pub async fn update_user_role(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let valid_roles = ["admin", "doctor", "nurse", "readonly"];
     if !valid_roles.contains(&req.role.as_str()) {
-        return Err(AppError::BadRequest(format!(
+        return Err(AppError::new(ErrorCode::InvalidRole, format!(
             "无效的角色: {}，有效值: {:?}",
             req.role, valid_roles
         )));

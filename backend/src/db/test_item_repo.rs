@@ -93,7 +93,7 @@ impl Database {
                 ],
             )?;
             if affected == 0 {
-                return Err(AppError::NotFound("检验项目不存在".to_string()));
+                return Err(AppError::test_item_not_found());
             }
             Ok(())
         })
@@ -107,7 +107,7 @@ impl Database {
                 })
                 .optional()?;
             if existing.is_none() {
-                return Err(AppError::NotFound("检验项目不存在".to_string()));
+                return Err(AppError::test_item_not_found());
             }
             conn.execute("DELETE FROM test_items WHERE id = ?1", [id])?;
             Ok(())

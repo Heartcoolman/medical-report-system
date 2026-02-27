@@ -117,7 +117,7 @@ pub async fn update_settings(
                         Some(v) if v.is_empty() => Ok(None), // empty string, clear
                         Some(v) => {
                             let encrypted = crypto::encrypt_field(&v)
-                                .map_err(|e| AppError::Internal(format!("加密失败: {}", e)))?;
+                                .map_err(|e| AppError::internal(format!("加密失败: {}", e)))?;
                             Ok(Some(encrypted))
                         }
                     }

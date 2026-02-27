@@ -1,12 +1,12 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     Json,
 };
 use serde::Serialize;
 
 use crate::error::run_blocking;
-use crate::error::AppError;
-use crate::models::ApiResponse;
+use crate::error::{AppError, ErrorCode};
+use crate::models::{ApiResponse, PaginatedList, PaginationParams};
 use crate::AppState;
 
 pub async fn get_timeline(
@@ -34,20 +34,31 @@ pub struct CriticalAlert {
 
 pub async fn get_critical_alerts(
     State(state): State<AppState>,
-) -> Result<Json<ApiResponse<Vec<CriticalAlert>>>, AppError> {
+    Query(pagination): Query<PaginationParams>,
+) -> Result<Json<ApiResponse<PaginatedList<CriticalAlert>>>, AppError> {
+    let (page, page_size) = pagination.normalize();
     let db = state.db.clone();
-    let alerts = run_blocking(move || {
+    let result = run_blocking(move || {
         db.with_conn(|conn| {
+            let total: usize = conn.query_row(
+                "SELECT COUNT(*) FROM test_items ti
+                 WHERE ti.status IN ('CriticalHigh', 'CriticalLow')",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).map_err(|e| AppError::new(ErrorCode::DatabaseError, format!("查询危急值总数失败: {}", e)))? as usize;
+
+            let offset = (page - 1) * page_size;
             let mut stmt = conn.prepare(
                 "SELECT p.id, p.name, r.id, r.report_type, r.report_date,
                         ti.name, ti.value, ti.unit, ti.reference_range, ti.status
                  FROM test_items ti
                  JOIN reports r ON ti.report_id = r.id
                  JOIN patients p ON r.patient_id = p.id
-                 WHERE ti.status IN ('critical_high', 'critical_low')
-                 ORDER BY r.report_date DESC, p.name"
+                 WHERE ti.status IN ('CriticalHigh', 'CriticalLow')
+                 ORDER BY r.report_date DESC, p.name
+                 LIMIT ? OFFSET ?"
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(rusqlite::params![page_size as i64, offset as i64], |row| {
                 Ok(CriticalAlert {
                     patient_id: row.get(0)?,
                     patient_name: row.get(1)?,
@@ -61,13 +72,13 @@ pub async fn get_critical_alerts(
                     status: row.get(9)?,
                 })
             })?;
-            let mut alerts = Vec::new();
+            let mut items = Vec::new();
             for row in rows {
-                alerts.push(row.map_err(|e| AppError::Internal(format!("查询危急值失败: {}", e)))?);
+                items.push(row.map_err(|e| AppError::new(ErrorCode::DatabaseError, format!("查询危急值失败: {}", e)))?);
             }
-            Ok(alerts)
+            Ok(PaginatedList { items, total, page, page_size })
         })
     })
     .await?;
-    Ok(Json(ApiResponse::ok(alerts, "查询成功")))
+    Ok(Json(ApiResponse::ok(result, "查询成功")))
 }

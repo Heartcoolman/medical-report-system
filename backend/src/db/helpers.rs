@@ -96,7 +96,7 @@ pub fn parse_category(value: &str) -> ExpenseCategory {
 /// Encrypt a patient field if encryption is enabled. Returns plaintext if not.
 pub fn encrypt_patient_field(value: &str) -> Result<String, AppError> {
     if crypto::encryption_enabled() {
-        crypto::encrypt_field(value).map_err(|e| AppError::Internal(e))
+        crypto::encrypt_field(value).map_err(|e| AppError::internal(e))
     } else {
         Ok(value.to_string())
     }
@@ -194,6 +194,47 @@ pub fn backfill_comparator_statuses(conn: &Connection) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+/// Execute a paginated query: runs COUNT(*) + data query with LIMIT/OFFSET.
+/// The `data_sql` must end with `LIMIT ? OFFSET ?` placeholders.
+pub fn paginated_query<T, F>(
+    conn: &Connection,
+    count_sql: &str,
+    data_sql: &str,
+    count_params: &[&dyn rusqlite::types::ToSql],
+    data_params: &[&dyn rusqlite::types::ToSql],
+    page: usize,
+    page_size: usize,
+    row_mapper: F,
+) -> Result<crate::models::PaginatedList<T>, AppError>
+where
+    T: serde::Serialize,
+    F: FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
+{
+    let total: usize = conn
+        .query_row(count_sql, count_params, |row| row.get::<_, i64>(0))?
+        .try_into()
+        .unwrap_or(0);
+
+    let offset = (page - 1) * page_size;
+    let limit_i64 = page_size as i64;
+    let offset_i64 = offset as i64;
+    let mut all_params: Vec<&dyn rusqlite::types::ToSql> = data_params.to_vec();
+    all_params.push(&limit_i64);
+    all_params.push(&offset_i64);
+
+    let mut stmt = conn.prepare(data_sql)?;
+    let items = stmt
+        .query_map(all_params.as_slice(), row_mapper)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(crate::models::PaginatedList {
+        items,
+        total,
+        page,
+        page_size,
+    })
 }
 
 /// Normalize common cross-hospital aliases for trend grouping.

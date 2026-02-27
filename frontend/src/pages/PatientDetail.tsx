@@ -15,9 +15,9 @@ export default function PatientDetail() {
   const { toast } = useToast()
 
   const [patient] = createResource(() => params.id, (id) => api.patients.get(id))
-  const [reports, { refetch }] = createResource(() => params.id, (id) => api.reports.listByPatient(id))
+  const [reports, { refetch }] = createResource(() => params.id, (id) => api.reports.listByPatient(id, { page_size: 100 }).then(r => r.items))
 
-  const [temperatures, { refetch: refetchTemps }] = createResource(() => params.id, (id) => api.temperatures.list(id))
+  const [temperatures, { refetch: refetchTemps }] = createResource(() => params.id, (id) => api.temperatures.list(id, { page_size: 100 }).then(r => r.items))
 
   const [showDeleteModal, setShowDeleteModal] = createSignal(false)
   const [deleting, setDeleting] = createSignal(false)
@@ -25,7 +25,7 @@ export default function PatientDetail() {
   const [showExpenseModal, setShowExpenseModal] = createSignal(false)
   const [showActionSheet, setShowActionSheet] = createSignal(false)
 
-  const [expenses, { refetch: refetchExpenses }] = createResource(() => params.id, (id) => api.expenses.list(id))
+  const [expenses, { refetch: refetchExpenses }] = createResource(() => params.id, (id) => api.expenses.list(id, { page_size: 100 }).then(r => r.items))
 
   const [deleteExpenseId, setDeleteExpenseId] = createSignal<string | null>(null)
   const [deletingExpense, setDeletingExpense] = createSignal(false)

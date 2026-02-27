@@ -8,6 +8,7 @@ export interface AuthUser {
 }
 
 const TOKEN_KEY = 'auth_token'
+const REFRESH_TOKEN_KEY = 'refresh_token'
 
 const [user, setUser] = createSignal<AuthUser | null>(null)
 const [ready, setReady] = createSignal(false)
@@ -38,20 +39,20 @@ export function authReady() {
 
 export async function login(username: string, password: string) {
   const res = await api.auth.login(username, password)
-  setToken(res.token)
+  // api.auth.login already stores tokens in localStorage via .then()
   setUser(res.user)
   return res
 }
 
 export async function register(username: string, password: string) {
   const res = await api.auth.register(username, password)
-  setToken(res.token)
+  // api.auth.register already stores tokens in localStorage via .then()
   setUser(res.user)
   return res
 }
 
 export function logout() {
-  setToken(null)
+  api.auth.logout() // revoke refresh token server-side (fire-and-forget)
   setUser(null)
 }
 
@@ -66,6 +67,7 @@ export async function initAuth() {
     setUser(me)
   } catch {
     setToken(null)
+    localStorage.removeItem(REFRESH_TOKEN_KEY)
     setUser(null)
   } finally {
     setReady(true)

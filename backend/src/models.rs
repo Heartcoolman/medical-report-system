@@ -520,6 +520,31 @@ pub struct PaginatedList<T: Serialize> {
     pub page_size: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PaginationParams {
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
+}
+
+impl PaginationParams {
+    pub fn normalize(&self) -> (usize, usize) {
+        let page = self.page.unwrap_or(1).max(1);
+        let page_size = self.page_size.unwrap_or(crate::db::helpers::DEFAULT_PAGE_SIZE).clamp(1, 100);
+        (page, page_size)
+    }
+}
+
+// --- File Upload ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileUploadResult {
+    pub file_id: String,
+    pub url: String,
+    pub original_name: String,
+    pub mime_type: String,
+    pub size: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

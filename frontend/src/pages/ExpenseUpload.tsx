@@ -139,7 +139,7 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       const compressed = await compressImage(f)
       const [parseResult, existingList] = await Promise.all([
         api.expenses.parse(props.patientId, compressed),
-        api.expenses.list(props.patientId).catch(() => [] as { expense_date: string }[]),
+        api.expenses.list(props.patientId, { page_size: 100 }).then(r => r.items).catch(() => [] as { expense_date: string }[]),
       ])
       const existingDates = new Set(existingList.map(e => e.expense_date))
       finishParse(parseResult.days, existingDates)

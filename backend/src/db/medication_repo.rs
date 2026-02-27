@@ -113,7 +113,7 @@ impl Database {
                 params![role, user_id],
             )?;
             if changed == 0 {
-                return Err(AppError::NotFound("用户不存在".to_string()));
+                return Err(AppError::new(crate::error::ErrorCode::NoData, "用户不存在"));
             }
             Ok(())
         })
@@ -123,7 +123,7 @@ impl Database {
         self.with_conn(|conn| {
             let changed = conn.execute("DELETE FROM users WHERE id=?1", params![user_id])?;
             if changed == 0 {
-                return Err(AppError::NotFound("用户不存在".to_string()));
+                return Err(AppError::new(crate::error::ErrorCode::NoData, "用户不存在"));
             }
             Ok(())
         })

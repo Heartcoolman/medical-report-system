@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::{run_blocking, AppError};
-use crate::models::{ApiResponse, CreateTemperatureReq, TemperatureRecord};
+use crate::models::{ApiResponse, CreateTemperatureReq, PaginatedList, PaginationParams, TemperatureRecord};
 use crate::AppState;
 
 pub async fn create_temperature(
@@ -15,14 +15,14 @@ pub async fn create_temperature(
     Json(req): Json<CreateTemperatureReq>,
 ) -> Result<Json<ApiResponse<TemperatureRecord>>, AppError> {
     if let Err(msg) = req.validate() {
-        return Err(AppError::BadRequest(msg));
+        return Err(AppError::validation(msg));
     }
     // Verify patient exists
     let db = state.db.clone();
     let pid = patient_id.clone();
     let exists = run_blocking(move || db.get_patient(&pid)).await?;
     if exists.is_none() {
-        return Err(AppError::NotFound("患者不存在".to_string()));
+        return Err(AppError::patient_not_found());
     }
     let record = TemperatureRecord {
         id: Uuid::new_v4().to_string(),
@@ -42,9 +42,14 @@ pub async fn create_temperature(
 pub async fn list_temperatures(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
-) -> Result<Json<ApiResponse<Vec<TemperatureRecord>>>, AppError> {
+    Query(pagination): Query<PaginationParams>,
+) -> Result<Json<ApiResponse<PaginatedList<TemperatureRecord>>>, AppError> {
+    let (page, page_size) = pagination.normalize();
     let db = state.db.clone();
-    let records = run_blocking(move || db.list_temperatures_by_patient(&patient_id)).await?;
+    let records = run_blocking(move || {
+        db.list_temperatures_by_patient_paginated(&patient_id, page, page_size)
+    })
+    .await?;
     Ok(Json(ApiResponse::ok(records, "查询成功")))
 }
 

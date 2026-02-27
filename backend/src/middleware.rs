@@ -4,6 +4,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Redirect},
 };
+use crate::error::AppError;
 use governor::{clock::DefaultClock, state::keyed::DefaultKeyedStateStore, Quota, RateLimiter};
 use std::{net::SocketAddr, num::NonZeroU32, sync::Arc};
 
@@ -14,12 +15,21 @@ pub async fn security_headers(
     next: Next,
 ) -> Response<axum::body::Body> {
     let is_sw = request.uri().path() == "/sw.js";
+    let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
     // SW must not be cached so browsers pick up updates immediately
     if is_sw {
         headers.insert(header::CACHE_CONTROL, "no-cache".parse().unwrap());
+    }
+
+    // API version identifier (only for /api/ requests)
+    if is_api {
+        headers.insert(
+            "X-API-Version".parse::<header::HeaderName>().unwrap(),
+            "v1".parse().unwrap(),
+        );
     }
 
     headers.insert(
@@ -149,27 +159,34 @@ pub async fn rate_limit(
     axum::extract::State(limiter): axum::extract::State<RateLimitState>,
     request: Request<axum::body::Body>,
     next: Next,
-) -> Result<Response<axum::body::Body>, StatusCode> {
+) -> Result<Response<axum::body::Body>, AppError> {
     let client_ip = extract_client_ip(&request);
     let path = request.uri().path().to_string();
 
+    // Normalize path: strip /api/v1 or /api prefix to get the API-relative path
+    let api_path = path
+        .strip_prefix("/api/v1")
+        .or_else(|| path.strip_prefix("/api"));
+
     // Check endpoint-specific limits first
-    if path.starts_with("/api/auth") {
-        if limiter.auth.check_key(&client_ip).is_err() {
-            tracing::warn!("速率限制: auth 端点限流 IP={}", client_ip);
-            return Err(StatusCode::TOO_MANY_REQUESTS);
-        }
-    } else if path == "/api/upload" || path == "/api/ocr/parse" {
-        if limiter.upload.check_key(&client_ip).is_err() {
-            tracing::warn!("速率限制: upload 端点限流 IP={}", client_ip);
-            return Err(StatusCode::TOO_MANY_REQUESTS);
+    if let Some(p) = api_path {
+        if p.starts_with("/auth") {
+            if limiter.auth.check_key(&client_ip).is_err() {
+                tracing::warn!("速率限制: auth 端点限流 IP={}", client_ip);
+                return Err(AppError::rate_limited());
+            }
+        } else if p == "/upload" || p == "/ocr/parse" {
+            if limiter.upload.check_key(&client_ip).is_err() {
+                tracing::warn!("速率限制: upload 端点限流 IP={}", client_ip);
+                return Err(AppError::rate_limited());
+            }
         }
     }
 
     // Global limit
     if limiter.global.check_key(&client_ip).is_err() {
         tracing::warn!("速率限制: 全局限流 IP={}", client_ip);
-        return Err(StatusCode::TOO_MANY_REQUESTS);
+        return Err(AppError::rate_limited());
     }
 
     Ok(next.run(request).await)

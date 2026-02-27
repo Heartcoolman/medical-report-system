@@ -1,7 +1,7 @@
 use axum::{extract::State, Json};
 use std::collections::HashMap;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::models::ApiResponse;
 use crate::AppState;
 
@@ -300,7 +300,7 @@ pub async fn backfill_canonical_names(
         Ok::<_, AppError>((grouped_items, items_by_report_type))
     })
     .await
-    .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+    .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     if all_items.is_empty() {
         return Ok(Json(ApiResponse::ok(
@@ -319,8 +319,8 @@ pub async fn backfill_canonical_names(
     let name_map = normalize_item_names(&state.http_client, &items_by_report_type, &[], &api_key).await;
 
     if name_map.is_empty() {
-        return Err(AppError::Internal(
-            "LLM 标准化调用失败，未获得任何映射结果".to_string(),
+        return Err(AppError::new(ErrorCode::LlmApiFailed,
+            "LLM 标准化调用失败，未获得任何映射结果",
         ));
     }
 
@@ -354,7 +354,7 @@ pub async fn backfill_canonical_names(
         Ok(count)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+    .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     let msg = format!("回填完成，更新了 {} 条记录", updated_count);
     Ok(Json(ApiResponse::ok(

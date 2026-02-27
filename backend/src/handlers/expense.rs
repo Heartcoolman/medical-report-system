@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     Json,
 };
 use base64::Engine;
@@ -9,10 +9,10 @@ use uuid::Uuid;
 use std::io::Cursor;
 
 use serde::de;
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::models::{
     ApiResponse, BatchConfirmExpenseReq, ConfirmExpenseReq, DailyExpense, DailyExpenseDetail,
-    DailyExpenseSummary, ExpenseItem,
+    DailyExpenseSummary, ExpenseItem, PaginatedList, PaginationParams,
 };
 use crate::AppState;
 
@@ -534,16 +534,16 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
 
             // Validate file extension
             crate::middleware::validate_file_extension(&fname)
-                .map_err(AppError::BadRequest)?;
+                .map_err(|e| AppError::new(ErrorCode::FileTypeNotAllowed, e))?;
 
             let data = field
                 .bytes()
                 .await
-                .map_err(|e| AppError::BadRequest(format!("读取上传数据失败: {}", e)))?;
+                .map_err(|e| AppError::new(ErrorCode::UploadReadFailed, format!("读取上传数据失败: {}", e)))?;
 
             // Validate file size
             if data.len() > crate::middleware::MAX_UPLOAD_SIZE {
-                return Err(AppError::BadRequest(format!(
+                return Err(AppError::new(ErrorCode::FileTooLarge, format!(
                     "文件大小超过限制 {}MB",
                     crate::middleware::MAX_UPLOAD_SIZE / 1024 / 1024
                 )));
@@ -551,12 +551,12 @@ async fn read_upload_bytes(multipart: &mut Multipart) -> Result<(Vec<u8>, String
 
             // Validate file type via magic bytes
             crate::middleware::validate_file_magic_bytes(&data)
-                .map_err(AppError::BadRequest)?;
+                .map_err(|e| AppError::new(ErrorCode::FileTypeNotAllowed, e))?;
 
             Ok((data.to_vec(), fname))
         }
-        Ok(None) => Err(AppError::BadRequest("未找到上传文件".to_string())),
-        Err(e) => Err(AppError::BadRequest(format!("读取上传字段失败: {}", e))),
+        Ok(None) => Err(AppError::new(ErrorCode::UploadEmpty, "未找到上传文件")),
+        Err(e) => Err(AppError::new(ErrorCode::UploadReadFailed, format!("读取上传字段失败: {}", e))),
     }
 }
 
@@ -610,8 +610,8 @@ pub async fn parse_expense(
         || lower.ends_with(".pdf");
 
     if !is_supported {
-        return Err(AppError::BadRequest(
-            "不支持的文件格式，请上传图片或 PDF 文件".to_string(),
+        return Err(AppError::new(ErrorCode::FileTypeNotAllowed,
+            "不支持的文件格式，请上传图片或 PDF 文件",
         ));
     }
 
@@ -621,7 +621,7 @@ pub async fn parse_expense(
     // Step 1: Vision model to extract expense items (may contain multiple days)
     let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
         tracing::warn!("消费清单识别失败: {}", e);
-        AppError::Internal(format!("消费清单识别失败: {}", e))
+        AppError::new(ErrorCode::OcrFailed, format!("消费清单识别失败: {}", e))
     })?;
     let total_items: usize = parsed_days.iter().map(|d| d.items.len()).sum();
     tracing::info!("消费清单识别完成, 共 {} 天 {} 项", parsed_days.len(), total_items);
@@ -656,10 +656,10 @@ pub async fn confirm_expense(
     let pid = patient_id.clone();
     let patient = tokio::task::spawn_blocking(move || db.get_patient(&pid))
         .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     if patient.is_none() {
-        return Err(AppError::NotFound("患者不存在".to_string()));
+        return Err(AppError::patient_not_found());
     }
 
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -694,7 +694,7 @@ pub async fn confirm_expense(
     let items_clone = items.clone();
     tokio::task::spawn_blocking(move || db.create_expense(&exp_clone, &items_clone))
         .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     Ok(Json(ApiResponse::ok(
         DailyExpenseDetail {
@@ -720,10 +720,10 @@ pub async fn batch_confirm_expense(
     let pid = patient_id.clone();
     let patient = tokio::task::spawn_blocking(move || db.get_patient(&pid))
         .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     if patient.is_none() {
-        return Err(AppError::NotFound("患者不存在".to_string()));
+        return Err(AppError::patient_not_found());
     }
 
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -764,7 +764,7 @@ pub async fn batch_confirm_expense(
         let items_clone = items.clone();
         tokio::task::spawn_blocking(move || db.create_expense(&exp_clone, &items_clone))
             .await
-            .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+            .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
         results.push(DailyExpenseDetail { expense, items });
     }
@@ -780,13 +780,17 @@ pub async fn batch_confirm_expense(
 pub async fn list_expenses(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
-) -> Result<Json<ApiResponse<Vec<DailyExpenseSummary>>>, AppError> {
+    Query(pagination): Query<PaginationParams>,
+) -> Result<Json<ApiResponse<PaginatedList<DailyExpenseSummary>>>, AppError> {
     let db = state.db.clone();
-    let summaries = tokio::task::spawn_blocking(move || db.list_expenses_by_patient(&patient_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+    let (page, page_size) = pagination.normalize();
+    let result = tokio::task::spawn_blocking(move || {
+        db.list_expenses_by_patient_paginated(&patient_id, page, page_size)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
-    Ok(Json(ApiResponse::ok(summaries, "查询成功")))
+    Ok(Json(ApiResponse::ok(result, "查询成功")))
 }
 
 /// Get expense detail
@@ -797,11 +801,11 @@ pub async fn get_expense(
     let db = state.db.clone();
     let detail = tokio::task::spawn_blocking(move || db.get_expense_detail(&id))
         .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     match detail {
         Some(d) => Ok(Json(ApiResponse::ok(d, "查询成功"))),
-        None => Err(AppError::NotFound("消费记录不存在".to_string())),
+        None => Err(AppError::expense_not_found()),
     }
 }
 
@@ -813,7 +817,7 @@ pub async fn delete_expense(
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || db.delete_expense(&id))
         .await
-        .map_err(|e| AppError::Internal(format!("任务执行失败: {}", e)))??;
+        .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     Ok(Json(ApiResponse::ok_msg("删除成功")))
 }
@@ -1058,8 +1062,8 @@ pub async fn parse_chunk(
         || lower.ends_with(".webp");
 
     if !is_supported {
-        return Err(AppError::BadRequest(
-            "不支持的文件格式，请上传图片文件".to_string(),
+        return Err(AppError::new(ErrorCode::FileTypeNotAllowed,
+            "不支持的文件格式，请上传图片文件",
         ));
     }
 
@@ -1067,7 +1071,7 @@ pub async fn parse_chunk(
 
     let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
         tracing::warn!("条带识别失败: {}", e);
-        AppError::Internal(format!("条带识别失败: {}", e))
+        AppError::new(ErrorCode::OcrFailed, format!("条带识别失败: {}", e))
     })?;
 
     let total_items: usize = parsed_days.iter().map(|d| d.items.len()).sum();

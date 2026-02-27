@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::models::{Report, ReportSummary};
+use crate::models::{PaginatedList, Report, ReportSummary};
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
@@ -62,7 +62,7 @@ impl Database {
                 "UPDATE reports SET patient_id = ?2, report_type = ?3, hospital = ?4, report_date = ?5, sample_date = ?6, file_path = ?7 WHERE id = ?1",
                 params![report.id, report.patient_id, report.report_type, report.hospital, report.report_date, report.sample_date, report.file_path],
             )?;
-            if affected == 0 { return Err(AppError::NotFound("报告不存在".to_string())); }
+            if affected == 0 { return Err(AppError::report_not_found()); }
             Ok(())
         })
     }
@@ -117,6 +117,86 @@ impl Database {
                 });
             }
             Ok(summaries)
+        })
+    }
+
+    pub fn list_reports_with_summary_by_patient_paginated(
+        &self,
+        patient_id: &str,
+        page: usize,
+        page_size: usize,
+    ) -> Result<PaginatedList<ReportSummary>, AppError> {
+        self.with_conn(|conn| {
+            // 1. COUNT(*) for total
+            let total: usize = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM reports WHERE patient_id = ?1",
+                    [patient_id],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .try_into()
+                .unwrap_or(0);
+
+            // 2. Get paginated reports with LIMIT/OFFSET
+            let offset = (page.max(1) - 1) * page_size;
+            let limit_i64 = page_size as i64;
+            let offset_i64 = offset as i64;
+            let mut stmt = conn.prepare(
+                "SELECT id, patient_id, report_type, hospital, report_date, sample_date, file_path, created_at
+                 FROM reports WHERE patient_id = ?1 ORDER BY report_date ASC, id ASC
+                 LIMIT ?2 OFFSET ?3",
+            )?;
+            let reports = stmt
+                .query_map(params![patient_id, limit_i64, offset_i64], |row| {
+                    Ok(Report {
+                        id: row.get(0)?,
+                        patient_id: row.get(1)?,
+                        report_type: row.get(2)?,
+                        hospital: row.get(3)?,
+                        report_date: row.get(4)?,
+                        sample_date: row.get(5)?,
+                        file_path: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            // 3. Enrich each report with item counts
+            let mut summaries = Vec::with_capacity(reports.len());
+            let mut item_stmt = conn.prepare(
+                "SELECT id, name, status FROM test_items WHERE report_id = ?1 ORDER BY id",
+            )?;
+            for report in reports {
+                let mut item_count = 0usize;
+                let mut abnormal_count = 0usize;
+                let mut abnormal_names = Vec::new();
+                let rows = item_stmt.query_map([&report.id], |row| {
+                    let name: String = row.get(1)?;
+                    let status: String = row.get(2)?;
+                    Ok((name, parse_status(&status)))
+                })?;
+                for row in rows {
+                    let (name, status) = row?;
+                    item_count += 1;
+                    if status.is_abnormal() {
+                        abnormal_count += 1;
+                        abnormal_names.push(name);
+                    }
+                }
+                summaries.push(ReportSummary {
+                    report,
+                    item_count,
+                    abnormal_count,
+                    abnormal_names,
+                });
+            }
+
+            Ok(PaginatedList {
+                items: summaries,
+                total,
+                page: page.max(1),
+                page_size,
+            })
         })
     }
 
@@ -220,7 +300,7 @@ impl Database {
                             file_path: row.get(6)?, created_at: row.get(7)?,
                         }),
                     ).optional()?;
-                    let report = report.ok_or_else(|| AppError::NotFound("报告不存在".to_string()))?;
+                    let report = report.ok_or_else(|| AppError::report_not_found())?;
 
                     let mut stmt = tx.prepare(
                         "SELECT id, report_id, name, value, unit, reference_range, status, canonical_name FROM test_items WHERE report_id = ?1 ORDER BY id",

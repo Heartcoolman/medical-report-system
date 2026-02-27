@@ -39,10 +39,17 @@ import type {
   TimelineEvent,
   UserInfo,
   CriticalAlert,
+  FileUploadResult,
   HealthAssessment,
+  DeviceSession,
 } from './types';
 
 const TOKEN_KEY = 'auth_token'
+const REFRESH_TOKEN_KEY = 'refresh_token'
+
+// API base path — read from Vite env variable, default to '/api' for backward compatibility.
+// Set VITE_API_BASE=/api/v1 in .env to use the versioned endpoint.
+export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || '/api';
 
 // Build-time version injected by Vite (from package.json).
 // Web is always deployed with the backend, so the backend skips version checks
@@ -50,7 +57,40 @@ const TOKEN_KEY = 'auth_token'
 declare const __APP_VERSION__: string
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
 
-async function request<T>(url: string, options?: RequestInit, timeout = 12000): Promise<T> {
+// --- Refresh token lock (prevents concurrent refresh calls) ---
+let refreshPromise: Promise<string> | null = null
+
+async function tryRefreshToken(): Promise<string> {
+  if (refreshPromise) return refreshPromise
+
+  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
+  if (!refreshToken) throw new Error('no refresh token')
+
+  refreshPromise = fetch(`${API_BASE}/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error('refresh failed')
+      const json = await res.json()
+      const newAccessToken: string = json.data.access_token
+      const newRefreshToken: string = json.data.refresh_token
+      localStorage.setItem(TOKEN_KEY, newAccessToken)
+      localStorage.setItem(REFRESH_TOKEN_KEY, newRefreshToken)
+      return newAccessToken
+    })
+    .finally(() => {
+      refreshPromise = null
+    })
+
+  return refreshPromise
+}
+
+async function request<T>(path: string, options?: RequestInit, timeout = 12000): Promise<T> {
+  // Prepend API_BASE to the resource path
+  const url = `${API_BASE}${path}`
+
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeout)
 
@@ -70,13 +110,46 @@ async function request<T>(url: string, options?: RequestInit, timeout = 12000): 
       signal: controller.signal,
     })
 
-    // Handle 401 — clear token and redirect to login
+    // Handle 401 — try to refresh token, then retry the original request
     if (res.status === 401) {
-      localStorage.removeItem(TOKEN_KEY)
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+      try {
+        const newToken = await tryRefreshToken()
+        // Retry original request with new token
+        const retryHeaders = new Headers(options?.headers)
+        retryHeaders.set('Authorization', `Bearer ${newToken}`)
+        retryHeaders.set('X-Client-Platform', 'web')
+        retryHeaders.set('X-Client-Version', APP_VERSION)
+        const retryController = new AbortController()
+        const retryTimer = window.setTimeout(() => retryController.abort(), timeout)
+        try {
+          const retryRes = await fetch(url, {
+            ...options,
+            headers: retryHeaders,
+            signal: retryController.signal,
+          })
+          const retryText = await retryRes.text()
+          let retryJson: ApiResponse<T>
+          try {
+            retryJson = retryText
+              ? (JSON.parse(retryText) as ApiResponse<T>)
+              : { success: false, data: null, message: 'empty' }
+          } catch {
+            throw new Error(`retry: invalid JSON, HTTP ${retryRes.status}`)
+          }
+          if (!retryRes.ok) throw new Error(retryJson.message || `retry failed: ${retryRes.status}`)
+          if (!retryJson.success) throw new Error(retryJson.message || 'retry failed')
+          return retryJson.data as T
+        } finally {
+          window.clearTimeout(retryTimer)
+        }
+      } catch {
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(REFRESH_TOKEN_KEY)
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
+        throw new Error('session expired')
       }
-      throw new Error('未授权，请重新登录')
     }
 
     const rawText = await res.text()
@@ -125,6 +198,9 @@ function qs(params: Record<string, string | number | undefined>): string {
 
 export interface AuthResponse {
   token: string
+  access_token: string
+  refresh_token: string
+  expires_in: number
   user: { id: string; username: string; role: string }
 }
 
@@ -137,78 +213,113 @@ export interface UserSettings {
 export const api = {
   auth: {
     login(username: string, password: string) {
-      return request<AuthResponse>('/api/auth/login', jsonRequest('POST', { username, password }));
+      return request<AuthResponse>('/auth/login', jsonRequest('POST', {
+        username,
+        password,
+        device_name: navigator.userAgent.slice(0, 50),
+        device_type: 'web',
+      })).then(data => {
+        localStorage.setItem(TOKEN_KEY, data.access_token || data.token)
+        localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token)
+        return data
+      });
     },
     register(username: string, password: string) {
-      return request<AuthResponse>('/api/auth/register', jsonRequest('POST', { username, password }));
+      return request<AuthResponse>('/auth/register', jsonRequest('POST', { username, password })).then(data => {
+        localStorage.setItem(TOKEN_KEY, data.access_token || data.token)
+        localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token)
+        return data
+      });
     },
     me() {
-      return request<{ id: string; username: string; role: string }>('/api/auth/me');
+      return request<{ id: string; username: string; role: string }>('/auth/me');
+    },
+    refresh(refreshToken: string) {
+      return request<AuthResponse>('/auth/refresh', jsonRequest('POST', { refresh_token: refreshToken }));
+    },
+    logout() {
+      const rt = localStorage.getItem(REFRESH_TOKEN_KEY)
+      localStorage.removeItem(TOKEN_KEY)
+      localStorage.removeItem(REFRESH_TOKEN_KEY)
+      if (rt) {
+        // fire-and-forget
+        fetch(`${API_BASE}/auth/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: rt }),
+        }).catch(() => {})
+      }
+    },
+    devices() {
+      return request<DeviceSession[]>('/auth/devices');
+    },
+    revokeDevice(id: string) {
+      return request<void>(`/auth/devices/${id}`, { method: 'DELETE' });
     },
   },
 
   user: {
     getSettings() {
-      return request<UserSettings>('/api/user/settings');
+      return request<UserSettings>('/user/settings');
     },
     updateSettings(data: Partial<UserSettings>) {
-      return request<UserSettings>('/api/user/settings', jsonRequest('PUT', data));
+      return request<UserSettings>('/user/settings', jsonRequest('PUT', data));
     },
   },
 
   patients: {
     list(params?: { search?: string; page?: number; page_size?: number }) {
-      return request<PaginatedList<PatientWithStats>>(`/api/patients${qs(params ?? {})}`);
+      return request<PaginatedList<PatientWithStats>>(`/patients${qs(params ?? {})}`);
     },
     get(id: string) {
-      return request<Patient>(`/api/patients/${id}`);
+      return request<Patient>(`/patients/${id}`);
     },
     create(data: PatientReq) {
-      return request<Patient>('/api/patients', jsonRequest('POST',data));
+      return request<Patient>('/patients', jsonRequest('POST',data));
     },
     update(id: string, data: PatientReq) {
-      return request<Patient>(`/api/patients/${id}`, jsonRequest('PUT',data));
+      return request<Patient>(`/patients/${id}`, jsonRequest('PUT',data));
     },
     delete(id: string) {
-      return request<void>(`/api/patients/${id}`, { method: 'DELETE' });
+      return request<void>(`/patients/${id}`, { method: 'DELETE' });
     },
   },
 
   reports: {
-    listByPatient(patientId: string) {
-      return request<ReportSummary[]>(`/api/patients/${patientId}/reports`);
+    listByPatient(patientId: string, params?: { page?: number; page_size?: number }) {
+      return request<PaginatedList<ReportSummary>>(`/patients/${patientId}/reports${qs(params ?? {})}`);
     },
     get(id: string) {
-      return request<ReportDetail>(`/api/reports/${id}`);
+      return request<ReportDetail>(`/reports/${id}`);
     },
     getInterpretation(id: string) {
-      return request<InterpretationCache | null>(`/api/reports/${id}/interpret-cache`);
+      return request<InterpretationCache | null>(`/reports/${id}/interpret-cache`);
     },
     create(patientId: string, data: CreateReportReq) {
-      return request<Report>(`/api/patients/${patientId}/reports`, jsonRequest('POST',data));
+      return request<Report>(`/patients/${patientId}/reports`, jsonRequest('POST',data));
     },
     update(id: string, data: UpdateReportReq) {
-      return request<Report>(`/api/reports/${id}`, jsonRequest('PUT',data));
+      return request<Report>(`/reports/${id}`, jsonRequest('PUT',data));
     },
     delete(id: string) {
-      return request<void>(`/api/reports/${id}`, { method: 'DELETE' });
+      return request<void>(`/reports/${id}`, { method: 'DELETE' });
     },
     mergeCheck(patientId: string, data: BatchConfirmReq) {
       return request<MergeCheckResult>(
-        `/api/patients/${patientId}/reports/merge-check`,
+        `/patients/${patientId}/reports/merge-check`,
         jsonRequest('POST',data),
       );
     },
     prefetchNormalize(patientId: string, data: BatchConfirmReq) {
       return request<Record<string, string>>(
-        `/api/patients/${patientId}/reports/prefetch-normalize`,
+        `/patients/${patientId}/reports/prefetch-normalize`,
         jsonRequest('POST',data),
         90000,
       );
     },
     batchConfirm(patientId: string, data: BatchConfirmReq) {
       return request<ReportDetail[]>(
-        `/api/patients/${patientId}/reports/confirm`,
+        `/patients/${patientId}/reports/confirm`,
         jsonRequest('POST',data),
       );
     },
@@ -216,33 +327,33 @@ export const api = {
 
   testItems: {
     listByReport(reportId: string) {
-      return request<TestItem[]>(`/api/reports/${reportId}/test-items`);
+      return request<TestItem[]>(`/reports/${reportId}/test-items`);
     },
     create(data: CreateTestItemReq) {
-      return request<TestItem>('/api/test-items', jsonRequest('POST',data));
+      return request<TestItem>('/test-items', jsonRequest('POST',data));
     },
     update(id: string, data: UpdateTestItemReq) {
-      return request<TestItem>(`/api/test-items/${id}`, jsonRequest('PUT',data));
+      return request<TestItem>(`/test-items/${id}`, jsonRequest('PUT',data));
     },
     delete(id: string) {
-      return request<void>(`/api/test-items/${id}`, { method: 'DELETE' });
+      return request<void>(`/test-items/${id}`, { method: 'DELETE' });
     },
   },
 
   editLogs: {
     list(params?: { page?: number; page_size?: number }) {
-      return request<PaginatedList<EditLog>>(`/api/edit-logs${qs(params ?? {})}`);
+      return request<PaginatedList<EditLog>>(`/edit-logs${qs(params ?? {})}`);
     },
     listByReport(reportId: string) {
-      return request<EditLog[]>(`/api/reports/${reportId}/edit-logs`);
+      return request<EditLog[]>(`/reports/${reportId}/edit-logs`);
     },
   },
 
   upload: {
-    async file(file: File): Promise<string> {
+    async file(file: File): Promise<FileUploadResult> {
       const form = new FormData();
       form.append('file', file);
-      return request<string>('/api/upload', { method: 'POST', body: form });
+      return request<FileUploadResult>('/upload', { method: 'POST', body: form });
     },
   },
 
@@ -250,32 +361,32 @@ export const api = {
     parse(file: File, timeout = 90000) {
       const form = new FormData();
       form.append('file', file);
-      return request<OcrParseResult>('/api/ocr/parse', { method: 'POST', body: form }, timeout);
+      return request<OcrParseResult>('/ocr/parse', { method: 'POST', body: form }, timeout);
     },
     suggestGroups(data: SuggestGroupsReq) {
-      return request<SuggestGroupsResult>('/api/ocr/suggest-groups', jsonRequest('POST',data));
+      return request<SuggestGroupsResult>('/ocr/suggest-groups', jsonRequest('POST',data));
     },
   },
 
   temperatures: {
-    list(patientId: string) {
-      return request<TemperatureRecord[]>(`/api/patients/${patientId}/temperatures`);
+    list(patientId: string, params?: { page?: number; page_size?: number }) {
+      return request<PaginatedList<TemperatureRecord>>(`/patients/${patientId}/temperatures${qs(params ?? {})}`);
     },
     create(patientId: string, data: CreateTemperatureReq) {
-      return request<TemperatureRecord>(`/api/patients/${patientId}/temperatures`, jsonRequest('POST',data));
+      return request<TemperatureRecord>(`/patients/${patientId}/temperatures`, jsonRequest('POST',data));
     },
     delete(id: string) {
-      return request<void>(`/api/temperatures/${id}`, { method: 'DELETE' });
+      return request<void>(`/temperatures/${id}`, { method: 'DELETE' });
     },
   },
 
   trends: {
     getItems(patientId: string) {
-      return request<TrendItemInfo[]>(`/api/patients/${patientId}/trend-items`);
+      return request<TrendItemInfo[]>(`/patients/${patientId}/trend-items`);
     },
     getData(patientId: string, itemName: string, reportType?: string) {
       return request<TrendPoint[]>(
-        `/api/patients/${patientId}/trends${qs({ item_name: itemName, report_type: reportType })}`,
+        `/patients/${patientId}/trends${qs({ item_name: itemName, report_type: reportType })}`,
       );
     },
   },
@@ -285,51 +396,51 @@ export const api = {
       const form = new FormData();
       form.append('file', file);
       return request<ExpenseParseResponse>(
-        `/api/patients/${patientId}/expenses/parse`,
+        `/patients/${patientId}/expenses/parse`,
         { method: 'POST', body: form },
         timeout,
       );
     },
     confirm(patientId: string, data: ConfirmExpenseReq) {
       return request<DailyExpenseDetail>(
-        `/api/patients/${patientId}/expenses/confirm`,
+        `/patients/${patientId}/expenses/confirm`,
         jsonRequest('POST', data),
       );
     },
     batchConfirm(patientId: string, data: BatchConfirmExpenseReq) {
       return request<DailyExpenseDetail[]>(
-        `/api/patients/${patientId}/expenses/batch-confirm`,
+        `/patients/${patientId}/expenses/batch-confirm`,
         jsonRequest('POST', data),
       );
     },
-    list(patientId: string) {
-      return request<DailyExpenseSummary[]>(`/api/patients/${patientId}/expenses`);
+    list(patientId: string, params?: { page?: number; page_size?: number }) {
+      return request<PaginatedList<DailyExpenseSummary>>(`/patients/${patientId}/expenses${qs(params ?? {})}`);
     },
     get(id: string) {
-      return request<DailyExpenseDetail>(`/api/expenses/${id}`);
+      return request<DailyExpenseDetail>(`/expenses/${id}`);
     },
     delete(id: string) {
-      return request<void>(`/api/expenses/${id}`, { method: 'DELETE' });
+      return request<void>(`/expenses/${id}`, { method: 'DELETE' });
     },
     parseChunk(file: File, timeout = 300000) {
       const form = new FormData();
       form.append('file', file);
       return request<ParsedExpenseDay[]>(
-        '/api/expenses/parse-chunk',
+        '/expenses/parse-chunk',
         { method: 'POST', body: form },
         timeout,
       );
     },
     mergeChunks(data: MergeChunksReq, timeout = 300000) {
       return request<ExpenseParseResponse>(
-        '/api/expenses/merge-chunks',
+        '/expenses/merge-chunks',
         jsonRequest('POST', data),
         timeout,
       );
     },
     analyze(data: AnalyzeExpenseReq) {
       return request<AnalyzeExpenseResp>(
-        '/api/expenses/analyze',
+        '/expenses/analyze',
         jsonRequest('POST', data),
         30000,
       );
@@ -338,46 +449,46 @@ export const api = {
 
   medications: {
     list(patientId: string) {
-      return request<Medication[]>(`/api/patients/${patientId}/medications`);
+      return request<Medication[]>(`/patients/${patientId}/medications`);
     },
     detectedDrugs(patientId: string) {
-      return request<DetectedDrug[]>(`/api/patients/${patientId}/detected-drugs`);
+      return request<DetectedDrug[]>(`/patients/${patientId}/detected-drugs`);
     },
     create(patientId: string, data: CreateMedicationReq) {
-      return request<Medication>(`/api/patients/${patientId}/medications`, jsonRequest('POST', data));
+      return request<Medication>(`/patients/${patientId}/medications`, jsonRequest('POST', data));
     },
     update(id: string, data: UpdateMedicationReq) {
-      return request<Medication>(`/api/medications/${id}`, jsonRequest('PUT', data));
+      return request<Medication>(`/medications/${id}`, jsonRequest('PUT', data));
     },
     delete(id: string) {
-      return request<void>(`/api/medications/${id}`, { method: 'DELETE' });
+      return request<void>(`/medications/${id}`, { method: 'DELETE' });
     },
   },
 
   timeline: {
     get(patientId: string) {
-      return request<TimelineEvent[]>(`/api/patients/${patientId}/timeline`);
+      return request<TimelineEvent[]>(`/patients/${patientId}/timeline`);
     },
   },
 
   admin: {
     backfillCanonicalNames() {
-      return request<{ updated: number }>('/api/admin/backfill-canonical-names', {
+      return request<{ updated: number }>('/admin/backfill-canonical-names', {
         method: 'POST',
       });
     },
     listUsers() {
-      return request<UserInfo[]>('/api/admin/users');
+      return request<UserInfo[]>('/admin/users');
     },
     updateUserRole(userId: string, role: string) {
-      return request<void>(`/api/admin/users/${userId}/role`, jsonRequest('PUT', { role }));
+      return request<void>(`/admin/users/${userId}/role`, jsonRequest('PUT', { role }));
     },
     deleteUser(userId: string) {
-      return request<void>(`/api/admin/users/${userId}`, { method: 'DELETE' });
+      return request<void>(`/admin/users/${userId}`, { method: 'DELETE' });
     },
     async downloadBackup() {
       const token = localStorage.getItem(TOKEN_KEY)
-      const res = await fetch('/api/admin/backup', {
+      const res = await fetch(`${API_BASE}/admin/backup`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       if (!res.ok) {
@@ -398,20 +509,20 @@ export const api = {
     async restoreBackup(file: File) {
       const form = new FormData()
       form.append('file', file)
-      return request<void>('/api/admin/restore', { method: 'POST', body: form }, 120000)
+      return request<void>('/admin/restore', { method: 'POST', body: form }, 120000)
     },
   },
 
   stats: {
-    criticalAlerts() {
-      return request<CriticalAlert[]>('/api/stats/critical-alerts');
+    criticalAlerts(params?: { page?: number; page_size?: number }) {
+      return request<PaginatedList<CriticalAlert>>(`/stats/critical-alerts${qs(params ?? {})}`);
     },
   },
 
   healthAssessment: {
     getCache(patientId: string) {
       return request<{ content: HealthAssessment; created_at: string } | null>(
-        `/api/patients/${patientId}/health-assessment-cache`,
+        `/patients/${patientId}/health-assessment-cache`,
       );
     },
   },

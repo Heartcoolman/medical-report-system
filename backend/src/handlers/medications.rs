@@ -28,7 +28,7 @@ pub async fn create_medication(
     Json(req): Json<CreateMedicationReq>,
 ) -> Result<Json<ApiResponse<Medication>>, AppError> {
     if req.name.trim().is_empty() {
-        return Err(AppError::BadRequest("药品名称不能为空".to_string()));
+        return Err(AppError::validation("药品名称不能为空"));
     }
     let med = Medication {
         id: Uuid::new_v4().to_string(),
@@ -113,7 +113,7 @@ pub async fn update_medication(
             run_blocking(move || db.update_medication(&m)).await?;
             Ok(Json(ApiResponse::ok(med, "更新成功")))
         }
-        None => Err(AppError::NotFound("用药记录不存在".to_string())),
+        None => Err(AppError::medication_not_found()),
     }
 }
 

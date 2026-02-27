@@ -67,6 +67,13 @@ async fn main() {
             std::process::exit(1);
         }
     }
+
+    // Clean up expired refresh tokens on startup
+    match db.cleanup_expired_refresh_tokens() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("已清理 {} 条过期 refresh token", n),
+        Err(e) => tracing::warn!("清理过期 refresh token 失败: {}", e),
+    }
     let http_client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(300))
@@ -112,6 +119,11 @@ async fn main() {
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             header::ACCEPT,
+            "X-Client-Platform".parse().unwrap(),
+            "X-Client-Version".parse().unwrap(),
+        ])
+        .expose_headers([
+            "X-API-Version".parse::<header::HeaderName>().unwrap(),
         ]);
 
     let state = AppState {

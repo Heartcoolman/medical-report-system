@@ -1,10 +1,12 @@
 mod assessment_repo;
 mod edit_log_repo;
 mod expense_repo;
+mod file_repo;
 pub mod helpers;
 mod interpretation_repo;
 pub mod medication_repo;
 mod patient_repo;
+mod refresh_token_repo;
 mod report_repo;
 mod temperature_repo;
 mod test_item_repo;
@@ -199,6 +201,36 @@ impl Database {
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                device_name TEXT NOT NULL DEFAULT '',
+                device_type TEXT NOT NULL DEFAULT '',
+                ip_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                replaced_by TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user
+                ON refresh_tokens(user_id, revoked, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash
+                ON refresh_tokens(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires
+                ON refresh_tokens(expires_at);
+            CREATE TABLE IF NOT EXISTS uploaded_files (
+                id TEXT PRIMARY KEY,
+                original_name TEXT NOT NULL,
+                safe_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                is_temporary INTEGER NOT NULL DEFAULT 0
+            );
             "#,
         )?;
 
@@ -226,7 +258,7 @@ impl Database {
         let mut conn = self
             .db
             .lock()
-            .map_err(|_| AppError::Internal("数据库连接锁获取失败".to_string()))?;
+            .map_err(|_| AppError::internal("数据库连接锁获取失败"))?;
         f(&mut conn)
     }
 }
