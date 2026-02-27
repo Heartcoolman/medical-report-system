@@ -486,17 +486,20 @@ export default function ReportDetail() {
                     value={editItemForm().reference_range ?? ''}
                     onInput={(e) => setEditItemForm(f => ({ ...f, reference_range: e.currentTarget.value }))}
                   />
-                  <Select
-                    label="状态"
-                    value={editItemForm().status ?? 'normal'}
-                    onChange={(e) => setEditItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
-                  >
-                    <option value="critical_high">严重偏高</option>
-                    <option value="high">偏高</option>
-                    <option value="normal">正常</option>
-                    <option value="low">偏低</option>
-                    <option value="critical_low">严重偏低</option>
-                  </Select>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="form-label">状态</label>
+                    <select
+                      class="form-control-base form-control-select"
+                      value={editItemForm().status ?? 'normal'}
+                      onChange={(e) => setEditItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
+                    >
+                      <option value="critical_high">严重偏高</option>
+                      <option value="high">偏高</option>
+                      <option value="normal">正常</option>
+                      <option value="low">偏低</option>
+                      <option value="critical_low">严重偏低</option>
+                    </select>
+                  </div>
                 </div>
               </Modal>
 
@@ -551,17 +554,20 @@ export default function ReportDetail() {
                     value={itemForm().reference_range}
                     onInput={(e) => setItemForm(f => ({ ...f, reference_range: e.currentTarget.value }))}
                   />
-                  <Select
-                    label="状态"
-                    value={itemForm().status}
-                    onChange={(e) => setItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
-                  >
-                    <option value="critical_high">严重偏高</option>
-                    <option value="high">偏高</option>
-                    <option value="normal">正常</option>
-                    <option value="low">偏低</option>
-                    <option value="critical_low">严重偏低</option>
-                  </Select>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="form-label">状态</label>
+                    <select
+                      class="form-control-base form-control-select"
+                      value={itemForm().status}
+                      onChange={(e) => setItemForm(f => ({ ...f, status: e.currentTarget.value as ItemStatus }))}
+                    >
+                      <option value="critical_high">严重偏高</option>
+                      <option value="high">偏高</option>
+                      <option value="normal">正常</option>
+                      <option value="low">偏低</option>
+                      <option value="critical_low">严重偏低</option>
+                    </select>
+                  </div>
                 </div>
               </Modal>
             </>
