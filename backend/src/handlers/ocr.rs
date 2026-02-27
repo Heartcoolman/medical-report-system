@@ -14,10 +14,10 @@ use crate::models::{ApiResponse, FileUploadResult, ItemStatus, Report, ReportDet
 
 fn parse_item_status(s: &str) -> ItemStatus {
     match s.trim().to_lowercase().as_str() {
-        "critical_high" => ItemStatus::CriticalHigh,
+        "critical_high" | "criticalhigh" => ItemStatus::CriticalHigh,
         "high" => ItemStatus::High,
         "low" => ItemStatus::Low,
-        "critical_low" => ItemStatus::CriticalLow,
+        "critical_low" | "criticallow" => ItemStatus::CriticalLow,
         _ => ItemStatus::Normal,
     }
 }

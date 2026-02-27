@@ -196,6 +196,52 @@ pub fn backfill_comparator_statuses(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Re-evaluate ALL test items' statuses using determine_status_with_severity.
+/// Fixes items that were imported before severity logic was added, or where
+/// the status was incorrectly set due to format conversion bugs.
+pub fn backfill_severity_statuses(conn: &Connection) -> Result<(), AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, value, reference_range, status
+         FROM test_items
+         WHERE reference_range <> ''",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut updated = 0usize;
+    for (id, value, reference_range, raw_status) in rows {
+        let fallback = parse_status(&raw_status);
+        let computed = crate::ocr::parser::determine_status_from_value_text(
+            &value,
+            &reference_range,
+            fallback,
+        );
+
+        if computed != fallback {
+            conn.execute(
+                "UPDATE test_items SET status = ?1 WHERE id = ?2",
+                params![status_to_db(&computed), id],
+            )?;
+            updated += 1;
+        }
+    }
+
+    if updated > 0 {
+        tracing::info!("severity backfill: 修正了 {} 条检验项目状态", updated);
+    }
+
+    Ok(())
+}
+
 /// Execute a paginated query: runs COUNT(*) + data query with LIMIT/OFFSET.
 /// The `data_sql` must end with `LIMIT ? OFFSET ?` placeholders.
 pub fn paginated_query<T, F>(

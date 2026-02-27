@@ -19,6 +19,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use helpers::backfill_comparator_statuses;
+use helpers::backfill_severity_statuses;
 
 /// Input for batch report creation
 pub struct BatchReportInput {
@@ -245,6 +246,7 @@ impl Database {
         let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_name TEXT", []);
 
         backfill_comparator_statuses(&conn)?;
+        backfill_severity_statuses(&conn)?;
 
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),

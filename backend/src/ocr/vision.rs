@@ -203,7 +203,7 @@ async fn call_api(
             &item.reference_range,
             fallback,
         );
-        item.status = computed.to_string();
+        item.status = computed.as_str().to_string();
     }
 
     Ok(report)
