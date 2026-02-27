@@ -35,8 +35,9 @@ pub struct CriticalAlert {
 pub async fn get_critical_alerts(
     State(state): State<AppState>,
     Query(pagination): Query<PaginationParams>,
-) -> Result<Json<ApiResponse<PaginatedList<CriticalAlert>>>, AppError> {
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (page, page_size) = pagination.normalize();
+    let paginated = pagination.is_paginated();
     let db = state.db.clone();
     let result = run_blocking(move || {
         db.with_conn(|conn| {
@@ -80,5 +81,9 @@ pub async fn get_critical_alerts(
         })
     })
     .await?;
-    Ok(Json(ApiResponse::ok(result, "查询成功")))
+    if paginated {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result).unwrap(), "查询成功")))
+    } else {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result.items).unwrap(), "查询成功")))
+    }
 }

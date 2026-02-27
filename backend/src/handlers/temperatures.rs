@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::{run_blocking, AppError};
-use crate::models::{ApiResponse, CreateTemperatureReq, PaginatedList, PaginationParams, TemperatureRecord};
+use crate::models::{ApiResponse, CreateTemperatureReq, PaginationParams, TemperatureRecord};
 use crate::AppState;
 
 pub async fn create_temperature(
@@ -43,14 +43,19 @@ pub async fn list_temperatures(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Query(pagination): Query<PaginationParams>,
-) -> Result<Json<ApiResponse<PaginatedList<TemperatureRecord>>>, AppError> {
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (page, page_size) = pagination.normalize();
+    let paginated = pagination.is_paginated();
     let db = state.db.clone();
-    let records = run_blocking(move || {
+    let result = run_blocking(move || {
         db.list_temperatures_by_patient_paginated(&patient_id, page, page_size)
     })
     .await?;
-    Ok(Json(ApiResponse::ok(records, "查询成功")))
+    if paginated {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result).unwrap(), "查询成功")))
+    } else {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result.items).unwrap(), "查询成功")))
+    }
 }
 
 pub async fn delete_temperature(

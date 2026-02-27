@@ -11,7 +11,7 @@ use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError, ErrorCode};
 use crate::models::{
     ApiResponse, CreateReportReq, CreateTestItemReq, EditLog, FieldChange, PaginatedList,
-    PaginationParams, Report, ReportDetail, ReportSummary, TestItem, TrendItemInfo, TrendPoint,
+    PaginationParams, Report, ReportDetail, TestItem, TrendItemInfo, TrendPoint,
     UpdateTestItemReq,
 };
 use crate::AppState;
@@ -81,12 +81,17 @@ pub async fn list_reports_by_patient(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Query(pagination): Query<PaginationParams>,
-) -> Result<Json<ApiResponse<PaginatedList<ReportSummary>>>, AppError> {
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let (page, page_size) = pagination.normalize();
+    let paginated = pagination.is_paginated();
     let db = state.db.clone();
     let result =
         run_blocking(move || db.list_reports_with_summary_by_patient_paginated(&patient_id, page, page_size)).await?;
-    Ok(Json(ApiResponse::ok(result, "查询成功")))
+    if paginated {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result).unwrap(), "查询成功")))
+    } else {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result.items).unwrap(), "查询成功")))
+    }
 }
 
 pub async fn delete_report_handler(

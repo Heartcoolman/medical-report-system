@@ -532,6 +532,13 @@ impl PaginationParams {
         let page_size = self.page_size.unwrap_or(crate::db::helpers::DEFAULT_PAGE_SIZE).clamp(1, 100);
         (page, page_size)
     }
+
+    /// Returns true if the client explicitly requested pagination.
+    /// Old cached frontends send no params → returns false → handler returns Vec<T>.
+    /// New frontends send page_size=100 → returns true → handler returns PaginatedList<T>.
+    pub fn is_paginated(&self) -> bool {
+        self.page.is_some() || self.page_size.is_some()
+    }
 }
 
 // --- File Upload ---

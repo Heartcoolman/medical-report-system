@@ -12,7 +12,7 @@ use serde::de;
 use crate::error::{AppError, ErrorCode};
 use crate::models::{
     ApiResponse, BatchConfirmExpenseReq, ConfirmExpenseReq, DailyExpense, DailyExpenseDetail,
-    DailyExpenseSummary, ExpenseItem, PaginatedList, PaginationParams,
+    ExpenseItem, PaginationParams,
 };
 use crate::AppState;
 
@@ -781,16 +781,21 @@ pub async fn list_expenses(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Query(pagination): Query<PaginationParams>,
-) -> Result<Json<ApiResponse<PaginatedList<DailyExpenseSummary>>>, AppError> {
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let db = state.db.clone();
     let (page, page_size) = pagination.normalize();
+    let paginated = pagination.is_paginated();
     let result = tokio::task::spawn_blocking(move || {
         db.list_expenses_by_patient_paginated(&patient_id, page, page_size)
     })
     .await
     .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
-    Ok(Json(ApiResponse::ok(result, "查询成功")))
+    if paginated {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result).unwrap(), "查询成功")))
+    } else {
+        Ok(Json(ApiResponse::ok(serde_json::to_value(&result.items).unwrap(), "查询成功")))
+    }
 }
 
 /// Get expense detail
