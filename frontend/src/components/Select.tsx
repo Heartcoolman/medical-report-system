@@ -1,5 +1,5 @@
 import type { Component, JSX } from 'solid-js'
-import { Show, splitProps } from 'solid-js'
+import { createEffect, Show, splitProps } from 'solid-js'
 import { cn } from '@/lib/utils'
 
 let selectIdCounter = 0
@@ -30,6 +30,16 @@ export const Select: Component<SelectProps> = (props) => {
   const errorId = () => `${selectId()}-error`
   const hintId = () => `${selectId()}-hint`
 
+  let selectRef!: HTMLSelectElement
+
+  // Set value via ref + effect so it runs AFTER children (options) are rendered
+  createEffect(() => {
+    const v = local.value
+    if (selectRef && v !== undefined) {
+      selectRef.value = v as string
+    }
+  })
+
   return (
     <div class={cn('flex flex-col gap-1.5', local.wrapperClass)}>
       <Show when={local.label}>
@@ -41,7 +51,7 @@ export const Select: Component<SelectProps> = (props) => {
       <div class="relative">
         <select
           {...rest}
-          value={local.value}
+          ref={selectRef}
           id={selectId()}
           aria-invalid={local.error ? true : undefined}
           aria-describedby={
