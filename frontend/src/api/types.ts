@@ -437,7 +437,7 @@ export interface CriticalAlert {
   value: string;
   unit: string;
   reference_range: string;
-  status: 'critical_high' | 'critical_low';
+  status: 'CriticalHigh' | 'CriticalLow';
 }
 
 // --- Device Session ---
