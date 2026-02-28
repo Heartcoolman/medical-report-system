@@ -8,7 +8,7 @@ import type { TableColumn } from '@/components'
 import { Table } from '@/components'
 import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
-import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus } from '@/api/types'
+import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus, EditLog } from '@/api/types'
 import { LlmInterpret } from '@/components/LlmInterpret'
 import { exportReportCSV } from '@/lib/export'
 import { exportReportPDF } from '@/lib/export-pdf'
@@ -36,6 +36,30 @@ export default function ReportDetail() {
     const list = siblingReports() ?? []
     return [...list].sort((a, b) => b.report_date.localeCompare(a.report_date))
   })
+
+  // Edit history for this report
+  const [editLogs] = createResource(() => params.id, (id) => api.editLogs.listByReport(id))
+
+  const actionLabels: Record<string, { text: string; variant: string }> = {
+    create: { text: '新增', variant: 'bg-success-light text-success' },
+    update: { text: '修改', variant: 'bg-info-light text-info' },
+    delete: { text: '删除', variant: 'bg-error-light text-error' },
+  }
+
+  const targetLabels: Record<string, string> = {
+    report: '报告',
+    test_item: '检验项目',
+  }
+
+  function formatTime(iso: string) {
+    try {
+      const d = new Date(iso)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    } catch {
+      return iso
+    }
+  }
 
   // Edit modal
   const [editOpen, setEditOpen] = createSignal(false)
@@ -417,6 +441,75 @@ export default function ReportDetail() {
                     url={`/api/reports/${params.id}/interpret`}
                     buttonLabel="AI 解读此报告"
                   />
+                </CardBody>
+              </Card>
+
+              {/* Edit History */}
+              <Card>
+                <CardHeader>
+                  <h2 class="section-title">编辑历史</h2>
+                </CardHeader>
+                <CardBody>
+                  <Show when={editLogs.loading}>
+                    <div class="flex justify-center py-4">
+                      <Spinner size="sm" />
+                    </div>
+                  </Show>
+                  <Show when={!editLogs.loading}>
+                    <Show when={(editLogs() ?? []).length > 0} fallback={
+                      <p class="text-sm text-content-tertiary text-center py-4">暂无编辑记录</p>
+                    }>
+                      <div class="space-y-2">
+                        <For each={editLogs() ?? []}>
+                          {(log: EditLog) => {
+                            const actionInfo = actionLabels[log.action] ?? { text: log.action, variant: 'bg-surface-secondary text-content-secondary' }
+                            return (
+                              <div class="flex items-start justify-between gap-3 py-2 border-b border-border/30 last:border-b-0">
+                                <div class="flex-1 min-w-0">
+                                  <div class="flex items-center gap-2 flex-wrap mb-1">
+                                    <span class={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${actionInfo.variant}`}>
+                                      {actionInfo.text}
+                                    </span>
+                                    <span class="text-xs text-content-tertiary">
+                                      {targetLabels[log.target_type] ?? log.target_type}
+                                    </span>
+                                    <Show when={log.operator_name}>
+                                      <span class="text-border">·</span>
+                                      <span class="text-xs text-content-secondary">{log.operator_name}</span>
+                                    </Show>
+                                  </div>
+                                  <p class="text-sm text-content">{log.summary}</p>
+                                  <Show when={log.changes.length > 0}>
+                                    <div class="mt-1 space-y-0.5">
+                                      <For each={log.changes}>
+                                        {(change) => (
+                                          <div class="flex items-center gap-2 text-xs">
+                                            <span class="text-content-secondary font-medium shrink-0">{change.field}:</span>
+                                            <span class="text-error line-through truncate max-w-[150px]" title={change.old_value}>
+                                              {change.old_value || '(空)'}
+                                            </span>
+                                            <svg class="w-3 h-3 text-content-tertiary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                                              <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                            </svg>
+                                            <span class="text-success truncate max-w-[150px]" title={change.new_value}>
+                                              {change.new_value || '(空)'}
+                                            </span>
+                                          </div>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </Show>
+                                </div>
+                                <span class="text-xs text-content-tertiary whitespace-nowrap shrink-0">
+                                  {formatTime(log.created_at)}
+                                </span>
+                              </div>
+                            )
+                          }}
+                        </For>
+                      </div>
+                    </Show>
+                  </Show>
                 </CardBody>
               </Card>
 

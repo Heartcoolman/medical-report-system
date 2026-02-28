@@ -38,8 +38,7 @@ import type {
   DetectedDrug,
   TimelineEvent,
   UserInfo,
-  CriticalAlert,
-  FileUploadResult,
+  AuditLog,
   HealthAssessment,
   DeviceSession,
 } from './types';
@@ -60,7 +59,7 @@ const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 // --- Refresh token lock (prevents concurrent refresh calls) ---
 let refreshPromise: Promise<string> | null = null
 
-async function tryRefreshToken(): Promise<string> {
+export async function tryRefreshToken(): Promise<string> {
   if (refreshPromise) return refreshPromise
 
   const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
@@ -86,6 +85,11 @@ async function tryRefreshToken(): Promise<string> {
 
   return refreshPromise
 }
+
+// --- update_notice from server responses ---
+let _lastUpdateNotice: string | null = null
+export function getLastUpdateNotice(): string | null { return _lastUpdateNotice }
+export function clearUpdateNotice() { _lastUpdateNotice = null }
 
 async function request<T>(path: string, options?: RequestInit, timeout = 12000): Promise<T> {
   // Prepend API_BASE to the resource path
@@ -161,6 +165,11 @@ async function request<T>(path: string, options?: RequestInit, timeout = 12000):
       throw new Error(`响应不是有效 JSON，HTTP ${res.status}`)
     }
 
+    // Capture server update_notice if present
+    if ((json as any).update_notice) {
+      _lastUpdateNotice = (json as any).update_notice
+    }
+
     if (!res.ok) {
       throw new Error(json.message || `请求失败: ${res.status}`)
     }
@@ -233,9 +242,6 @@ export const api = {
     },
     me() {
       return request<{ id: string; username: string; role: string }>('/auth/me');
-    },
-    refresh(refreshToken: string) {
-      return request<AuthResponse>('/auth/refresh', jsonRequest('POST', { refresh_token: refreshToken }));
     },
     logout() {
       const rt = localStorage.getItem(REFRESH_TOKEN_KEY)
@@ -346,14 +352,6 @@ export const api = {
     },
     listByReport(reportId: string) {
       return request<EditLog[]>(`/reports/${reportId}/edit-logs`);
-    },
-  },
-
-  upload: {
-    async file(file: File): Promise<FileUploadResult> {
-      const form = new FormData();
-      form.append('file', file);
-      return request<FileUploadResult>('/upload', { method: 'POST', body: form });
     },
   },
 
@@ -486,6 +484,9 @@ export const api = {
     deleteUser(userId: string) {
       return request<void>(`/admin/users/${userId}`, { method: 'DELETE' });
     },
+    auditLogs(params?: { page?: number; page_size?: number }) {
+      return request<PaginatedList<AuditLog>>(`/admin/audit-logs${qs(params ?? {})}`);
+    },
     async downloadBackup() {
       const token = localStorage.getItem(TOKEN_KEY)
       const res = await fetch(`${API_BASE}/admin/backup`, {
@@ -510,12 +511,6 @@ export const api = {
       const form = new FormData()
       form.append('file', file)
       return request<void>('/admin/restore', { method: 'POST', body: form }, 120000)
-    },
-  },
-
-  stats: {
-    criticalAlerts(params?: { page?: number; page_size?: number }) {
-      return request<PaginatedList<CriticalAlert>>(`/stats/critical-alerts${qs(params ?? {})}`);
     },
   },
 

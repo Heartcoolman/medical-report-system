@@ -231,8 +231,12 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
     setSaving(true)
     try {
       const validDays = days.filter(d => d.items.length > 0)
-      const batchData = {
-        days: validDays.map(day => ({
+
+      let saved: number
+      if (validDays.length === 1) {
+        // Single day: use the simpler confirm endpoint
+        const day = validDays[0]
+        const data = {
           expense_date: day.date,
           total_amount: day.total,
           drug_analysis: day.drugAnalysis,
@@ -244,10 +248,28 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
             amount: item.amount,
             note: item.note,
           })),
-        })),
+        }
+        await api.expenses.confirm(props.patientId, data)
+        saved = 1
+      } else {
+        const batchData = {
+          days: validDays.map(day => ({
+            expense_date: day.date,
+            total_amount: day.total,
+            drug_analysis: day.drugAnalysis,
+            treatment_analysis: day.treatmentAnalysis,
+            items: day.items.map(item => ({
+              name: item.name,
+              category: item.category as ExpenseCategory,
+              quantity: item.quantity,
+              amount: item.amount,
+              note: item.note,
+            })),
+          })),
+        }
+        const results = await api.expenses.batchConfirm(props.patientId, batchData)
+        saved = results.length
       }
-      const results = await api.expenses.batchConfirm(props.patientId, batchData)
-      const saved = results.length
       setSavedCount(saved)
       toast('success', `${saved} 天消费记录保存成功`)
       setStep('done')

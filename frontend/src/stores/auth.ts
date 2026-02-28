@@ -1,5 +1,5 @@
 import { createSignal } from 'solid-js'
-import { api } from '@/api/client'
+import { api, getLastUpdateNotice, clearUpdateNotice } from '@/api/client'
 
 export interface AuthUser {
   id: string
@@ -12,6 +12,7 @@ const REFRESH_TOKEN_KEY = 'refresh_token'
 
 const [user, setUser] = createSignal<AuthUser | null>(null)
 const [ready, setReady] = createSignal(false)
+const [updateNotice, setUpdateNotice] = createSignal<string | null>(null)
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -37,10 +38,21 @@ export function authReady() {
   return ready()
 }
 
+export function getUpdateNotice() {
+  return updateNotice()
+}
+
+export function dismissUpdateNotice() {
+  setUpdateNotice(null)
+  clearUpdateNotice()
+}
+
 export async function login(username: string, password: string) {
   const res = await api.auth.login(username, password)
   // api.auth.login already stores tokens in localStorage via .then()
   setUser(res.user)
+  const notice = getLastUpdateNotice()
+  if (notice) setUpdateNotice(notice)
   return res
 }
 
@@ -54,6 +66,7 @@ export async function register(username: string, password: string) {
 export function logout() {
   api.auth.logout() // revoke refresh token server-side (fire-and-forget)
   setUser(null)
+  setUpdateNotice(null)
 }
 
 export async function initAuth() {
@@ -65,6 +78,8 @@ export async function initAuth() {
   try {
     const me = await api.auth.me()
     setUser(me)
+    const notice = getLastUpdateNotice()
+    if (notice) setUpdateNotice(notice)
   } catch {
     setToken(null)
     localStorage.removeItem(REFRESH_TOKEN_KEY)

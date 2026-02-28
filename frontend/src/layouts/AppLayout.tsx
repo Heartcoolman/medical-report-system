@@ -10,7 +10,7 @@ import { A, useLocation, useNavigate } from '@solidjs/router'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/lib/theme'
 import { Button } from '@/components'
-import { currentUser, logout } from '@/stores/auth'
+import { currentUser, logout, getUpdateNotice, dismissUpdateNotice } from '@/stores/auth'
 
 type MobileMenuTransitionState = 'closed' | 'opening' | 'open' | 'closing'
 
@@ -284,6 +284,25 @@ export default function AppLayout(props: ParentProps) {
         </Show>
       </nav>
 
+      {/* Update notice banner */}
+      <Show when={getUpdateNotice()}>
+        <div class="bg-accent-light border-b border-accent/20">
+          <div class="max-w-screen-2xl mx-auto px-4 lg:px-8 py-2 flex items-center justify-between gap-3">
+            <p class="text-sm text-accent flex-1">{getUpdateNotice()}</p>
+            <button
+              type="button"
+              class="shrink-0 p-1 rounded text-accent hover:bg-accent/10 transition-colors cursor-pointer"
+              onClick={dismissUpdateNotice}
+              aria-label="关闭通知"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </Show>
+
       {/* Main Content */}
       <main class="max-w-screen-2xl mx-auto px-4 lg:px-8 py-6">
         {/* Breadcrumb — inline at top of content */}
@@ -325,6 +344,8 @@ function Breadcrumbs() {
       parts.push({ label: '用户设置' })
     } else if (path === '/admin/users') {
       parts.push({ label: '用户管理' })
+    } else if (path === '/admin/audit-logs') {
+      parts.push({ label: '审计日志' })
     } else if (path.match(/^\/patients\/[^/]+\/compare$/)) {
       parts.push({ label: '患者详情', href: path.replace('/compare', '') })
       parts.push({ label: '报告对比' })

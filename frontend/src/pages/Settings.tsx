@@ -1,7 +1,8 @@
-import { createSignal, onMount, Show } from 'solid-js'
+import { createSignal, createResource, onMount, Show, For } from 'solid-js'
 import { api } from '@/api/client'
 import { useToast, Button, Spinner, Modal } from '@/components'
 import { currentUser } from '@/stores/auth'
+import type { DeviceSession } from '@/api/types'
 
 export default function Settings() {
   const { toast } = useToast()
@@ -17,6 +18,33 @@ export default function Settings() {
   const [restoring, setRestoring] = createSignal(false)
   const [showRestoreModal, setShowRestoreModal] = createSignal(false)
   const [restoreFile, setRestoreFile] = createSignal<File | null>(null)
+
+  // Device management
+  const [devices, { refetch: refetchDevices }] = createResource(() => api.auth.devices())
+  const [revokingId, setRevokingId] = createSignal<string | null>(null)
+
+  const handleRevokeDevice = async (id: string) => {
+    setRevokingId(id)
+    try {
+      await api.auth.revokeDevice(id)
+      toast('success', '设备已登出')
+      refetchDevices()
+    } catch (err: any) {
+      toast('error', err.message || '登出设备失败')
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  function formatDeviceTime(iso: string) {
+    try {
+      const d = new Date(iso)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    } catch {
+      return iso
+    }
+  }
 
   const handleBackup = async () => {
     setBackingUp(true)
@@ -63,11 +91,14 @@ export default function Settings() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      await api.user.updateSettings({
+      const result = await api.user.updateSettings({
         llm_api_key: llmKey(),
         interpret_api_key: interpretKey(),
         siliconflow_api_key: siliconflowKey(),
       })
+      setLlmKey(result.llm_api_key || '')
+      setInterpretKey(result.interpret_api_key || '')
+      setSiliconflowKey(result.siliconflow_api_key || '')
       toast('success', '设置已保存')
     } catch (err: any) {
       toast('error', err.message || '保存失败')
@@ -188,6 +219,59 @@ export default function Settings() {
                 保存设置
               </Button>
             </div>
+          </div>
+
+          {/* Device Management — visible to all users */}
+          <div class="bg-surface-elevated rounded-2xl shadow-lg border border-border/40 p-6 mt-6">
+            <h2 class="text-base font-semibold text-content mb-1">设备管理</h2>
+            <p class="text-sm text-content-secondary mb-5">
+              管理您已登录的设备
+            </p>
+
+            <Show when={devices.loading}>
+              <div class="flex justify-center py-4">
+                <Spinner size="sm" />
+              </div>
+            </Show>
+
+            <Show when={devices.error}>
+              <p class="text-sm text-error">加载设备列表失败: {devices.error?.message}</p>
+            </Show>
+
+            <Show when={!devices.loading && !devices.error}>
+              <Show when={(devices() ?? []).length > 0} fallback={
+                <p class="text-sm text-content-tertiary text-center py-4">暂无登录设备</p>
+              }>
+                <div class="space-y-2">
+                  <For each={devices() ?? []}>
+                    {(device: DeviceSession) => (
+                      <div class="flex items-center justify-between px-3 py-2.5 rounded-lg bg-surface-secondary">
+                        <div class="flex-1 min-w-0">
+                          <div class="flex items-center gap-2 mb-0.5">
+                            <span class="text-sm font-medium text-content truncate">{device.device_name || '未知设备'}</span>
+                            <span class="text-xs px-1.5 py-0.5 rounded bg-accent-light text-accent">{device.device_type || 'unknown'}</span>
+                          </div>
+                          <div class="flex items-center gap-3 text-xs text-content-tertiary">
+                            <Show when={device.ip_address}>
+                              <span>{device.ip_address}</span>
+                            </Show>
+                            <span>最后活跃: {formatDeviceTime(device.last_used_at)}</span>
+                          </div>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          loading={revokingId() === device.id}
+                          onClick={() => handleRevokeDevice(device.id)}
+                        >
+                          登出
+                        </Button>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </Show>
           </div>
 
           {/* Admin: Backup & Restore */}

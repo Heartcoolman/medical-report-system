@@ -112,14 +112,6 @@ export interface CreateTestItemReq {
 
 // --- OCR ---
 
-export interface FileUploadResult {
-  file_id: string;
-  url: string;
-  original_name: string;
-  mime_type: string;
-  size: number;
-}
-
 export interface OcrParseResult {
   file_id: string;
   file_path: string;
@@ -425,19 +417,16 @@ export interface UserInfo {
   created_at: string;
 }
 
-// --- Critical Alerts ---
-
-export interface CriticalAlert {
-  patient_id: string;
-  patient_name: string;
-  report_id: string;
-  report_type: string;
-  report_date: string;
-  item_name: string;
-  value: string;
-  unit: string;
-  reference_range: string;
-  status: 'CriticalHigh' | 'CriticalLow';
+export interface AuditLog {
+  id: string;
+  user_id: string;
+  username: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  detail: string;
+  ip_address: string;
+  created_at: string;
 }
 
 // --- Device Session ---

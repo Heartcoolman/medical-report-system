@@ -1,5 +1,6 @@
 import { createSignal, createEffect, For, Show, onCleanup } from 'solid-js'
 import { Button, Card, CardBody, Spinner } from '@/components'
+import { tryRefreshToken } from '@/api/client'
 
 export interface LlmInterpretProps {
   /** SSE endpoint URL to connect to, e.g. /api/reports/:id/interpret */
@@ -132,6 +133,24 @@ export function LlmInterpret(props: LlmInterpretProps) {
       signal: abort.signal,
     })
       .then(async (resp) => {
+        // Handle 401 — try to refresh token and retry once
+        if (resp.status === 401) {
+          let newToken: string
+          try {
+            newToken = await tryRefreshToken()
+          } catch {
+            localStorage.removeItem('auth_token')
+            localStorage.removeItem('refresh_token')
+            if (window.location.pathname !== '/login') {
+              window.location.href = '/login'
+            }
+            throw new Error('session expired')
+          }
+          resp = await fetch(props.url, {
+            headers: { Authorization: `Bearer ${newToken}` },
+            signal: abort.signal,
+          })
+        }
         if (!resp.ok) {
           throw new Error(`请求失败: ${resp.status}`)
         }

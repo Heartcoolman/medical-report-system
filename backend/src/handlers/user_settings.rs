@@ -32,6 +32,17 @@ fn mask_key(val: &str) -> String {
     format!("{}****", &val[..4])
 }
 
+/// Decrypt an encrypted value and return its masked form.
+fn decrypt_and_mask(val: Option<String>) -> String {
+    match val {
+        Some(v) if !v.is_empty() => {
+            let decrypted = crypto::decrypt_field(&v).unwrap_or(v);
+            mask_key(&decrypted)
+        }
+        _ => String::new(),
+    }
+}
+
 /// GET /api/user/settings
 pub async fn get_settings(
     auth: AuthUser,
@@ -61,16 +72,6 @@ pub async fn get_settings(
 
     let (llm, interpret, siliconflow) = keys.unwrap_or((None, None, None));
 
-    let decrypt_and_mask = |val: Option<String>| -> String {
-        match val {
-            Some(v) if !v.is_empty() => {
-                let decrypted = crypto::decrypt_field(&v).unwrap_or(v);
-                mask_key(&decrypted)
-            }
-            _ => String::new(),
-        }
-    };
-
     Ok(Json(ApiResponse::ok(
         UserApiKeysResponse {
             llm_api_key: decrypt_and_mask(llm),
@@ -86,11 +87,11 @@ pub async fn update_settings(
     auth: AuthUser,
     State(state): State<AppState>,
     Json(req): Json<UpdateApiKeysRequest>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<UserApiKeysResponse>>, AppError> {
     let user_id = auth.0.sub.clone();
     let db = state.db.clone();
 
-    run_blocking(move || {
+    let masked = run_blocking(move || {
         db.with_conn(|conn| {
             // Read current values
             let current: Option<(Option<String>, Option<String>, Option<String>)> = conn
@@ -138,12 +139,17 @@ pub async fn update_settings(
                 rusqlite::params![user_id, new_llm, new_interpret, new_siliconflow],
             )?;
 
-            Ok(())
+            // Return masked keys
+            Ok(UserApiKeysResponse {
+                llm_api_key: decrypt_and_mask(new_llm),
+                interpret_api_key: decrypt_and_mask(new_interpret),
+                siliconflow_api_key: decrypt_and_mask(new_siliconflow),
+            })
         })
     })
     .await?;
 
-    Ok(Json(ApiResponse::ok_msg("设置已保存")))
+    Ok(Json(ApiResponse::ok(masked, "设置已保存")))
 }
 
 use rusqlite::OptionalExtension;

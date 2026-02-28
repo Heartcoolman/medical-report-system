@@ -1,4 +1,4 @@
-import { createSignal, createResource, createMemo, Show, For, onCleanup } from 'solid-js'
+import { createSignal, createResource, Show, For, onCleanup } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
 import { api } from '@/api/client'
 import type { PatientWithStats } from '@/api/types'

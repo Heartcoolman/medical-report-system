@@ -9,7 +9,7 @@ import { api } from '@/api/client'
 import type {
   OcrParseResult, ParsedItem, SuggestGroupsResult,
   BatchReportInput, BatchConfirmReq,
-  ReportDetail,
+  ReportDetail, MergeCheckResult,
 } from '@/api/types'
 
 const STEP_LABELS = ['上传文件', '预览编辑', '分组确认', '保存完成'] as const
@@ -57,6 +57,11 @@ export default function ReportUpload(props: ReportUploadProps) {
   const [saving, setSaving] = createSignal(false)
   const [savedReports, setSavedReports] = createSignal<ReportDetail[]>([])
 
+  // Merge check modal
+  const [mergeCheckResult, setMergeCheckResult] = createSignal<MergeCheckResult | null>(null)
+  const [showMergeConfirm, setShowMergeConfirm] = createSignal(false)
+  const [pendingBatchReq, setPendingBatchReq] = createSignal<BatchConfirmReq | null>(null)
+
   function resetState() {
     setStep(0)
     setFiles([])
@@ -71,6 +76,9 @@ export default function ReportUpload(props: ReportUploadProps) {
     setSelectedIndependent(new Set<number>())
     setSaving(false)
     setSavedReports([])
+    setMergeCheckResult(null)
+    setShowMergeConfirm(false)
+    setPendingBatchReq(null)
   }
 
   function handleClose() {
@@ -394,11 +402,49 @@ export default function ReportUpload(props: ReportUploadProps) {
   // --- Step 4: Save ---
 
   async function confirmSave() {
+    let req = buildBatchReq()
+
+    // Merge check: see if any reports will merge into existing ones
+    try {
+      const mergeResult = await api.reports.mergeCheck(props.patientId, req)
+      if (mergeResult.merges.length > 0) {
+        setMergeCheckResult(mergeResult)
+        setPendingBatchReq(req)
+        setShowMergeConfirm(true)
+        return
+      }
+    } catch {
+      // mergeCheck failed — graceful fallback, proceed without check
+      toast('warning', '合并检查失败，将直接保存')
+    }
+
+    await doSave(req)
+  }
+
+  async function confirmMergeAndSave() {
+    const req = pendingBatchReq()
+    const merges = mergeCheckResult()
+    if (!req || !merges) return
+
+    // Apply existing_report_id from merge check result
+    const updatedReports = req.reports.map((r, i) => {
+      const merge = merges.merges.find(m => m.input_index === i)
+      if (merge) {
+        return { ...r, existing_report_id: merge.existing_report_id }
+      }
+      return r
+    })
+    const updatedReq = { ...req, reports: updatedReports }
+    setShowMergeConfirm(false)
+    setMergeCheckResult(null)
+    setPendingBatchReq(null)
+    await doSave(updatedReq)
+  }
+
+  async function doSave(req: BatchConfirmReq) {
     setStep(3)
     setSaving(true)
     try {
-      let req = buildBatchReq()
-
       // Prefetch normalize
       const nameMap = await api.reports.prefetchNormalize(props.patientId, req)
       req = { ...req, prefetched_name_map: nameMap, skip_merge_check: true }
@@ -514,6 +560,7 @@ export default function ReportUpload(props: ReportUploadProps) {
   ]
 
   return (
+    <>
     <Modal
       open={props.open}
       onClose={() => canClose() && handleClose()}
@@ -893,5 +940,43 @@ export default function ReportUpload(props: ReportUploadProps) {
         </Show>
       </div>
     </Modal>
+
+    {/* Merge confirmation modal */}
+    <Modal
+      open={showMergeConfirm()}
+      onClose={() => setShowMergeConfirm(false)}
+      title="合并确认"
+      footer={
+        <>
+          <Button variant="outline" onClick={() => { setShowMergeConfirm(false); setPendingBatchReq(null); setMergeCheckResult(null) }}>取消</Button>
+          <Button variant="primary" onClick={confirmMergeAndSave}>确认合并保存</Button>
+        </>
+      }
+    >
+      <div class="space-y-3">
+        <p class="text-sm text-content-secondary">
+          以下报告将合并到已有报告中：
+        </p>
+        <div class="space-y-2">
+          <For each={mergeCheckResult()?.merges ?? []}>
+            {(merge) => {
+              const report = pendingBatchReq()?.reports[merge.input_index]
+              return (
+                <div class="flex items-center gap-2 px-3 py-2 bg-surface-secondary rounded-lg text-sm">
+                  <Badge variant="warning">合并</Badge>
+                  <span class="font-medium">{report?.report_type ?? '未知'}</span>
+                  <span class="text-content-secondary">{report?.report_date ?? ''}</span>
+                  <svg class="w-3 h-3 text-content-tertiary shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                  <span class="text-content-tertiary">{merge.existing_report_type}</span>
+                </div>
+              )
+            }}
+          </For>
+        </div>
+      </div>
+    </Modal>
+    </>
   )
 }

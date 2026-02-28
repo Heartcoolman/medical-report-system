@@ -18,6 +18,7 @@ const Login = lazy(() => import('./pages/Login'))
 const Register = lazy(() => import('./pages/Register'))
 const Settings = lazy(() => import('./pages/Settings'))
 const AdminUsers = lazy(() => import('./pages/AdminUsers'))
+const AdminAuditLogs = lazy(() => import('./pages/AdminAuditLogs'))
 const ReportCompare = lazy(() => import('./pages/ReportCompare'))
 const Timeline = lazy(() => import('./pages/Timeline'))
 const Medications = lazy(() => import('./pages/Medications'))
@@ -106,6 +107,7 @@ function App() {
             <Route path="/edit-logs" component={EditLogs} />
             <Route path="/settings" component={Settings} />
             <Route path="/admin/users" component={AdminUsers} />
+            <Route path="/admin/audit-logs" component={AdminAuditLogs} />
             <Route path="/patients/:id/compare" component={ReportCompare} />
             <Route path="/patients/:id/timeline" component={Timeline} />
             <Route path="/patients/:id/medications" component={Medications} />

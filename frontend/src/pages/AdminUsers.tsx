@@ -1,4 +1,5 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
+import { A } from '@solidjs/router'
 import { api } from '@/api/client'
 import type { UserInfo } from '@/api/types'
 import { Button, Card, CardBody, Badge, Modal, Select, useToast, Spinner, Empty } from '@/components'
@@ -61,7 +62,10 @@ export default function AdminUsers() {
   return (
     <div class="page-shell">
       <div class="max-w-3xl mx-auto">
-        <h1 class="page-title mb-6">用户管理</h1>
+        <div class="flex items-center justify-between mb-6">
+          <h1 class="page-title">用户管理</h1>
+          <A href="/admin/audit-logs" class="text-sm text-accent hover:underline">审计日志</A>
+        </div>
 
         <Show when={users.loading}>
           <div class="flex justify-center py-12">
