@@ -42,12 +42,12 @@ pub fn get_interpret_api_key(db: &crate::db::Database, user_id: &str) -> String 
     std::env::var("INTERPRET_API_KEY").expect("环境变量 INTERPRET_API_KEY 未设置")
 }
 
-/// Read ZHIPU_API_KEY: prefer user key, fallback to environment variable.
-pub fn get_zhipu_api_key(db: &crate::db::Database, user_id: &str) -> String {
-    if let Some(key) = user_settings::get_user_api_key(db, user_id, "zhipu") {
+/// Read SILICONFLOW_API_KEY: prefer user key, fallback to environment variable.
+pub fn get_siliconflow_api_key(db: &crate::db::Database, user_id: &str) -> String {
+    if let Some(key) = user_settings::get_user_api_key(db, user_id, "siliconflow") {
         return key;
     }
-    std::env::var("ZHIPU_API_KEY").expect("环境变量 ZHIPU_API_KEY 未设置")
+    std::env::var("SILICONFLOW_API_KEY").unwrap_or_default()
 }
 
 /// Strip `<think>...</think>` blocks from LLM responses.

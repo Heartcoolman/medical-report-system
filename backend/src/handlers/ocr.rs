@@ -141,7 +141,7 @@ pub async fn ocr_parse(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<OcrParseResult>>, AppError> {
-    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (file_path, file_name, size) = save_upload_file(&mut multipart).await?;
     let client = state.http_client.clone();
 

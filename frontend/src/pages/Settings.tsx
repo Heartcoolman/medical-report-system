@@ -10,7 +10,7 @@ export default function Settings() {
   const [saving, setSaving] = createSignal(false)
   const [llmKey, setLlmKey] = createSignal('')
   const [interpretKey, setInterpretKey] = createSignal('')
-  const [zhipuKey, setZhipuKey] = createSignal('')
+  const [siliconflowKey, setZhipuKey] = createSignal('')
   const [showLlm, setShowLlm] = createSignal(false)
   const [showInterpret, setShowInterpret] = createSignal(false)
   const [showZhipu, setShowZhipu] = createSignal(false)
@@ -80,7 +80,7 @@ export default function Settings() {
       const settings = await api.user.getSettings()
       setLlmKey(settings.llm_api_key || '')
       setInterpretKey(settings.interpret_api_key || '')
-      setZhipuKey(settings.zhipu_api_key || '')
+      setZhipuKey(settings.siliconflow_api_key || '')
     } catch (err: any) {
       toast('error', err.message || '加载设置失败')
     } finally {
@@ -94,11 +94,11 @@ export default function Settings() {
       const result = await api.user.updateSettings({
         llm_api_key: llmKey(),
         interpret_api_key: interpretKey(),
-        zhipu_api_key: zhipuKey(),
+        siliconflow_api_key: siliconflowKey(),
       })
       setLlmKey(result.llm_api_key || '')
       setInterpretKey(result.interpret_api_key || '')
-      setZhipuKey(result.zhipu_api_key || '')
+      setZhipuKey(result.siliconflow_api_key || '')
       toast('success', '设置已保存')
     } catch (err: any) {
       toast('error', err.message || '保存失败')
@@ -190,7 +190,7 @@ export default function Settings() {
                 <div class="relative">
                   <input
                     type={showZhipu() ? 'text' : 'password'}
-                    value={zhipuKey()}
+                    value={siliconflowKey()}
                     onInput={(e) => setZhipuKey(e.currentTarget.value)}
                     placeholder="输入 API Key"
                     class="form-control-base form-control-input pr-10"

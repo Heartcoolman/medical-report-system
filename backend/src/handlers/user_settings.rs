@@ -11,14 +11,14 @@ use crate::AppState;
 pub struct UserApiKeysResponse {
     pub llm_api_key: String,
     pub interpret_api_key: String,
-    pub zhipu_api_key: String,
+    pub siliconflow_api_key: String,
 }
 
 #[derive(Deserialize)]
 pub struct UpdateApiKeysRequest {
     pub llm_api_key: Option<String>,
     pub interpret_api_key: Option<String>,
-    pub zhipu_api_key: Option<String>,
+    pub siliconflow_api_key: Option<String>,
 }
 
 /// Mask a key: show first 4 chars + "****" if non-empty.
@@ -54,7 +54,7 @@ pub async fn get_settings(
     let keys = run_blocking(move || {
         db.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT llm_api_key, interpret_api_key, zhipu_api_key FROM user_api_keys WHERE user_id = ?1",
+                "SELECT llm_api_key, interpret_api_key, siliconflow_api_key FROM user_api_keys WHERE user_id = ?1",
             )?;
             let result = stmt
                 .query_row(rusqlite::params![user_id], |row| {
@@ -76,7 +76,7 @@ pub async fn get_settings(
         UserApiKeysResponse {
             llm_api_key: decrypt_and_mask(llm),
             interpret_api_key: decrypt_and_mask(interpret),
-            zhipu_api_key: decrypt_and_mask(zhipu),
+            siliconflow_api_key: decrypt_and_mask(zhipu),
         },
         "获取成功",
     )))
@@ -96,7 +96,7 @@ pub async fn update_settings(
             // Read current values
             let current: Option<(Option<String>, Option<String>, Option<String>)> = conn
                 .prepare(
-                    "SELECT llm_api_key, interpret_api_key, zhipu_api_key FROM user_api_keys WHERE user_id = ?1",
+                    "SELECT llm_api_key, interpret_api_key, siliconflow_api_key FROM user_api_keys WHERE user_id = ?1",
                 )?
                 .query_row(rusqlite::params![user_id], |row| {
                     Ok((
@@ -107,7 +107,7 @@ pub async fn update_settings(
                 })
                 .optional()?;
 
-            let (cur_llm, cur_interpret, cur_zhipu) =
+            let (cur_llm, cur_interpret, cur_siliconflow) =
                 current.unwrap_or((None, None, None));
 
             let process_key =
@@ -126,24 +126,24 @@ pub async fn update_settings(
 
             let new_llm = process_key(req.llm_api_key, cur_llm)?;
             let new_interpret = process_key(req.interpret_api_key, cur_interpret)?;
-            let new_zhipu = process_key(req.zhipu_api_key, cur_zhipu)?;
+            let new_siliconflow = process_key(req.siliconflow_api_key, cur_siliconflow)?;
 
             conn.execute(
-                "INSERT INTO user_api_keys (user_id, llm_api_key, interpret_api_key, zhipu_api_key, updated_at)
+                "INSERT INTO user_api_keys (user_id, llm_api_key, interpret_api_key, siliconflow_api_key, updated_at)
                  VALUES (?1, ?2, ?3, ?4, datetime('now'))
                  ON CONFLICT(user_id) DO UPDATE SET
                    llm_api_key = excluded.llm_api_key,
                    interpret_api_key = excluded.interpret_api_key,
-                   zhipu_api_key = excluded.zhipu_api_key,
+                   siliconflow_api_key = excluded.siliconflow_api_key,
                    updated_at = excluded.updated_at",
-                rusqlite::params![user_id, new_llm, new_interpret, new_zhipu],
+                rusqlite::params![user_id, new_llm, new_interpret, new_siliconflow],
             )?;
 
             // Return masked keys
             Ok(UserApiKeysResponse {
                 llm_api_key: decrypt_and_mask(new_llm),
                 interpret_api_key: decrypt_and_mask(new_interpret),
-                zhipu_api_key: decrypt_and_mask(new_zhipu),
+                siliconflow_api_key: decrypt_and_mask(new_siliconflow),
             })
         })
     })
@@ -163,7 +163,7 @@ pub fn get_user_api_key(
     let column = match key_type {
         "llm" => "llm_api_key",
         "interpret" => "interpret_api_key",
-        "zhipu" => "zhipu_api_key",
+        "siliconflow" => "siliconflow_api_key",
         _ => return None,
     };
 

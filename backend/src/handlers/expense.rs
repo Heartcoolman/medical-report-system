@@ -598,7 +598,7 @@ pub async fn parse_expense(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
-    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -1057,7 +1057,7 @@ pub async fn parse_chunk(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<Vec<ParsedExpenseDay>>>, AppError> {
-    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 

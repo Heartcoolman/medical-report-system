@@ -179,7 +179,7 @@ impl Database {
                 user_id TEXT PRIMARY KEY,
                 llm_api_key TEXT,
                 interpret_api_key TEXT,
-                zhipu_api_key TEXT,
+                siliconflow_api_key TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS medications (
@@ -245,8 +245,10 @@ impl Database {
         let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_id TEXT", []);
         let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_name TEXT", []);
 
-        // Migration: rename siliconflow_api_key → zhipu_api_key
+        // Migration: rename siliconflow_api_key → zhipu_api_key (historical)
         let _ = conn.execute("ALTER TABLE user_api_keys RENAME COLUMN siliconflow_api_key TO zhipu_api_key", []);
+        // Migration: rename zhipu_api_key → siliconflow_api_key
+        let _ = conn.execute("ALTER TABLE user_api_keys RENAME COLUMN zhipu_api_key TO siliconflow_api_key", []);
 
         backfill_comparator_statuses(&conn)?;
         backfill_severity_statuses(&conn)?;
