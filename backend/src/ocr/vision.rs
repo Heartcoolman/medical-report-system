@@ -5,7 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const API_URL: &str = "https://api.siliconflow.cn/v1/chat/completions";
-const VISION_MODEL: &str = "Qwen/Qwen3-VL-235B-A22B-Instruct";
+const VISION_MODEL: &str = "zai-org/GLM-4.6V";
 
 const SYSTEM_PROMPT: &str = r#"你是一个专业的医疗检验报告识别助手。请从报告中提取以下信息，以严格的 JSON 格式返回，不要包含任何其他文字：
 {
@@ -41,6 +41,12 @@ const SYSTEM_PROMPT: &str = r#"你是一个专业的医疗检验报告识别助�
 - 只返回 JSON，不要有任何额外说明"#;
 
 #[derive(Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    thinking_type: String,
+}
+
+#[derive(Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<Message>,
@@ -48,6 +54,8 @@ struct ChatRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Serialize)]
@@ -157,6 +165,9 @@ pub async fn recognize_file_with_client(
         ],
         temperature: Some(0.1),
         max_tokens: Some(4096),
+        thinking: Some(ThinkingConfig {
+            thinking_type: "disabled".to_string(),
+        }),
     };
 
     call_api(client, &api_key, &req).await

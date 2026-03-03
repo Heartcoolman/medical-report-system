@@ -141,7 +141,7 @@ pub async fn ocr_parse(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<OcrParseResult>>, AppError> {
-    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
     let (file_path, file_name, size) = save_upload_file(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -161,7 +161,7 @@ pub async fn ocr_parse(
     // All supported formats go through the vision model directly
     let fp = file_path.clone();
     let c = client.clone();
-    let parsed = match crate::ocr::vision::recognize_file_with_client(&fp, &c, &siliconflow_key).await {
+    let parsed = match crate::ocr::vision::recognize_file_with_client(&fp, &c, &zhipu_key).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("视觉模型识别失败: {}", e);

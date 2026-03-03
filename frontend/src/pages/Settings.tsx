@@ -10,10 +10,10 @@ export default function Settings() {
   const [saving, setSaving] = createSignal(false)
   const [llmKey, setLlmKey] = createSignal('')
   const [interpretKey, setInterpretKey] = createSignal('')
-  const [siliconflowKey, setSiliconflowKey] = createSignal('')
+  const [zhipuKey, setZhipuKey] = createSignal('')
   const [showLlm, setShowLlm] = createSignal(false)
   const [showInterpret, setShowInterpret] = createSignal(false)
-  const [showSiliconflow, setShowSiliconflow] = createSignal(false)
+  const [showZhipu, setShowZhipu] = createSignal(false)
   const [backingUp, setBackingUp] = createSignal(false)
   const [restoring, setRestoring] = createSignal(false)
   const [showRestoreModal, setShowRestoreModal] = createSignal(false)
@@ -80,7 +80,7 @@ export default function Settings() {
       const settings = await api.user.getSettings()
       setLlmKey(settings.llm_api_key || '')
       setInterpretKey(settings.interpret_api_key || '')
-      setSiliconflowKey(settings.siliconflow_api_key || '')
+      setZhipuKey(settings.zhipu_api_key || '')
     } catch (err: any) {
       toast('error', err.message || '加载设置失败')
     } finally {
@@ -94,11 +94,11 @@ export default function Settings() {
       const result = await api.user.updateSettings({
         llm_api_key: llmKey(),
         interpret_api_key: interpretKey(),
-        siliconflow_api_key: siliconflowKey(),
+        zhipu_api_key: zhipuKey(),
       })
       setLlmKey(result.llm_api_key || '')
       setInterpretKey(result.interpret_api_key || '')
-      setSiliconflowKey(result.siliconflow_api_key || '')
+      setZhipuKey(result.zhipu_api_key || '')
       toast('success', '设置已保存')
     } catch (err: any) {
       toast('error', err.message || '保存失败')
@@ -186,22 +186,22 @@ export default function Settings() {
               </div>
 
               <div class="flex flex-col gap-1.5">
-                <label class="form-label">SiliconFlow API Key（视觉识别）</label>
+                <label class="form-label">视觉识别 API Key（硅基流动）</label>
                 <div class="relative">
                   <input
-                    type={showSiliconflow() ? 'text' : 'password'}
-                    value={siliconflowKey()}
-                    onInput={(e) => setSiliconflowKey(e.currentTarget.value)}
+                    type={showZhipu() ? 'text' : 'password'}
+                    value={zhipuKey()}
+                    onInput={(e) => setZhipuKey(e.currentTarget.value)}
                     placeholder="输入 API Key"
                     class="form-control-base form-control-input pr-10"
                   />
                   <button
                     type="button"
                     class="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-lg text-content-tertiary hover:text-content transition-colors cursor-pointer"
-                    onClick={() => setShowSiliconflow(!showSiliconflow())}
-                    aria-label={showSiliconflow() ? '隐藏' : '显示'}
+                    onClick={() => setShowZhipu(!showZhipu())}
+                    aria-label={showZhipu() ? '隐藏' : '显示'}
                   >
-                    <Show when={showSiliconflow()} fallback={<EyeIcon />}>
+                    <Show when={showZhipu()} fallback={<EyeIcon />}>
                       <EyeOffIcon />
                     </Show>
                   </button>

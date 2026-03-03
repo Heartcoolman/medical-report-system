@@ -247,7 +247,7 @@ fn check_required_env_vars() {
     let optional_keys = [
         ("LLM_API_KEY", "LLM 识别功能"),
         ("INTERPRET_API_KEY", "AI 智能解读功能"),
-        ("SILICONFLOW_API_KEY", "视觉 OCR / 消费清单识别功能"),
+        ("ZHIPU_API_KEY", "视觉 OCR / 消费清单识别功能"),
     ];
 
     for (key, desc) in &optional_keys {

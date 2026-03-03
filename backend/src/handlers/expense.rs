@@ -598,7 +598,7 @@ pub async fn parse_expense(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
-    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -619,7 +619,7 @@ pub async fn parse_expense(
     tracing::info!("开始识别消费清单: {} ({} bytes)", file_name, orig_size);
 
     // Step 1: Vision model to extract expense items (may contain multiple days)
-    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
+    let parsed_days = recognize_expense_bytes(&raw_bytes, &file_name, &client, &zhipu_key).await.map_err(|e| {
         tracing::warn!("消费清单识别失败: {}", e);
         AppError::new(ErrorCode::OcrFailed, format!("消费清单识别失败: {}", e))
     })?;
@@ -862,7 +862,7 @@ async fn recognize_expense_bytes(
     .map_err(|e| format!("编码文件失败: {}", e))?;
 
     let body = serde_json::json!({
-        "model": "Qwen/Qwen3-VL-32B-Instruct",
+        "model": "zai-org/GLM-4.6V",
         "messages": [
             {
                 "role": "system",
@@ -883,7 +883,8 @@ async fn recognize_expense_bytes(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 16384
+        "max_tokens": 16384,
+        "thinking": {"type": "disabled"}
     });
 
     let api_url = "https://api.siliconflow.cn/v1/chat/completions";
@@ -1056,7 +1057,7 @@ pub async fn parse_chunk(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<Vec<ParsedExpenseDay>>>, AppError> {
-    let siliconflow_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_zhipu_api_key(&state.db, &auth.0.sub);
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -1074,7 +1075,7 @@ pub async fn parse_chunk(
 
     tracing::info!("开始识别消费清单条带: {} ({} bytes)", file_name, raw_bytes.len());
 
-    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &siliconflow_key).await.map_err(|e| {
+    let parsed_days = recognize_chunk_bytes(&raw_bytes, &file_name, &client, &zhipu_key).await.map_err(|e| {
         tracing::warn!("条带识别失败: {}", e);
         AppError::new(ErrorCode::OcrFailed, format!("条带识别失败: {}", e))
     })?;
@@ -1110,7 +1111,7 @@ async fn recognize_chunk_bytes(
     .map_err(|e| format!("编码文件失败: {}", e))?;
 
     let body = serde_json::json!({
-        "model": "Qwen/Qwen3-VL-32B-Instruct",
+        "model": "zai-org/GLM-4.6V",
         "messages": [
             {
                 "role": "system",
@@ -1131,7 +1132,8 @@ async fn recognize_chunk_bytes(
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 4096
+        "max_tokens": 4096,
+        "thinking": {"type": "disabled"}
     });
 
     let api_url = "https://api.siliconflow.cn/v1/chat/completions";

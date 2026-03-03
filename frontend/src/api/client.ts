@@ -216,7 +216,7 @@ export interface AuthResponse {
 export interface UserSettings {
   llm_api_key: string
   interpret_api_key: string
-  siliconflow_api_key: string
+  zhipu_api_key: string
 }
 
 export const api = {
