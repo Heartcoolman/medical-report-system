@@ -8,6 +8,7 @@ pub mod medication_repo;
 mod patient_repo;
 mod refresh_token_repo;
 mod report_repo;
+mod risk_prediction_repo;
 mod temperature_repo;
 mod test_item_repo;
 mod trend_repo;
@@ -232,6 +233,12 @@ impl Database {
                 created_at TEXT NOT NULL,
                 is_temporary INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS risk_predictions (
+                patient_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+            );
             "#,
         )?;
 
@@ -249,6 +256,9 @@ impl Database {
         let _ = conn.execute("ALTER TABLE user_api_keys RENAME COLUMN siliconflow_api_key TO zhipu_api_key", []);
         // Migration: rename zhipu_api_key → siliconflow_api_key
         let _ = conn.execute("ALTER TABLE user_api_keys RENAME COLUMN zhipu_api_key TO siliconflow_api_key", []);
+
+        // Migration: add risk_level column to patients
+        let _ = conn.execute("ALTER TABLE patients ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low'", []);
 
         backfill_comparator_statuses(&conn)?;
         backfill_severity_statuses(&conn)?;

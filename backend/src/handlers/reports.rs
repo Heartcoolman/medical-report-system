@@ -52,6 +52,10 @@ pub async fn create_report(
     let db = state.db.clone();
     let r = report.clone();
     run_blocking(move || db.create_report(&r)).await?;
+    // Invalidate risk prediction cache when a new report is added
+    let db = state.db.clone();
+    let pid = report.patient_id.clone();
+    let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
     Ok(Json(ApiResponse::ok(report, "创建成功")))
 }
 
@@ -98,12 +102,25 @@ pub async fn delete_report_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
+    // Fetch report to get patient_id before deleting
+    let db = state.db.clone();
+    let rid = id.clone();
+    let report = run_blocking(move || db.get_report(&rid)).await?;
+    let patient_id = report.map(|r| r.patient_id).unwrap_or_default();
+
     // Invalidate cached interpretation before deleting
     let db = state.db.clone();
     let rid = id.clone();
     let _ = run_blocking(move || db.delete_interpretation(&rid)).await;
     let db = state.db.clone();
     run_blocking(move || db.delete_report_with_index_cleanup(&id)).await?;
+
+    // Invalidate risk prediction cache
+    if !patient_id.is_empty() {
+        let db = state.db.clone();
+        let _ = run_blocking(move || db.delete_risk_prediction(&patient_id)).await;
+    }
+
     Ok(Json(ApiResponse::ok_msg("删除成功")))
 }
 
@@ -355,6 +372,13 @@ pub async fn update_test_item(
         let rid = item.report_id.clone();
         let report = run_blocking(move || db.get_report(&rid)).await?;
         let patient_id = report.map(|r| r.patient_id).unwrap_or_default();
+
+        // Invalidate risk prediction cache
+        if !patient_id.is_empty() {
+            let db = state.db.clone();
+            let pid = patient_id.clone();
+            let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+        }
 
         let changed_fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
         let summary = format!("修改了检验项目「{}」的{}", item.name, changed_fields.join("、"));

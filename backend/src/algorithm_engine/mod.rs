@@ -5,3 +5,4 @@ pub mod llm_verify;
 pub mod name_normalizer;
 pub mod report_profiles;
 pub mod report_taxonomy;
+pub mod trend_analyzer;

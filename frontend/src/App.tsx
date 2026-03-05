@@ -24,6 +24,7 @@ const Timeline = lazy(() => import('./pages/Timeline'))
 const Medications = lazy(() => import('./pages/Medications'))
 const ReportTemplates = lazy(() => import('./pages/ReportTemplates'))
 const HealthAssessment = lazy(() => import('./pages/HealthAssessment'))
+const RiskPrediction = lazy(() => import('./pages/RiskPrediction'))
 
 // Initialize auth on app load
 initAuth()
@@ -113,6 +114,7 @@ function App() {
             <Route path="/patients/:id/medications" component={Medications} />
             <Route path="/patients/:id/templates" component={ReportTemplates} />
             <Route path="/patients/:id/health-assessment" component={HealthAssessment} />
+            <Route path="/patients/:id/risk-prediction" component={RiskPrediction} />
             <Route path="*" component={NotFound} />
           </Route>
         </Suspense>

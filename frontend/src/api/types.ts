@@ -408,6 +408,27 @@ export interface HealthAssessment {
   disclaimer: string;
 }
 
+// --- Risk Prediction ---
+
+export interface RiskFactor {
+  category: string;
+  severity: '低' | '中' | '高';
+  description: string;
+  trend: '稳定' | '好转' | '恶化' | '波动';
+  last_value: string;
+  reference: string;
+}
+
+export interface RiskPrediction {
+  risk_level: '低' | '中' | '高';
+  risk_score: number;
+  risk_factors: RiskFactor[];
+  recommendations: string[];
+  next_review_date: string | null;
+  generated_at: string;
+  cached: boolean;
+}
+
 // --- Admin ---
 
 export interface UserInfo {

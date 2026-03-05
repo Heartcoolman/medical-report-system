@@ -581,6 +581,14 @@ export default function PatientDetail() {
                               variant="secondary"
                               size="sm"
                               class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/risk-prediction`)}
+                            >
+                              风险预测
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
                               onClick={() => navigate(`/patients/${params.id}/timeline`)}
                             >
                               健康时间线

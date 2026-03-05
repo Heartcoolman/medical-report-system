@@ -135,6 +135,11 @@ fn readonly_routes() -> Router<AppState> {
             "/patients/:patient_id/health-assessment-cache",
             get(handlers::health_assessment::get_cached_assessment),
         )
+        // Risk prediction
+        .route(
+            "/patients/:patient_id/risk-prediction",
+            get(handlers::risk_prediction::get_risk_prediction),
+        )
         // File serving
         .route("/files/:file_id", get(handlers::ocr::serve_file))
 }

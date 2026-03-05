@@ -9,6 +9,7 @@ pub mod normalize;
 pub mod ocr;
 pub mod patients;
 pub mod reports;
+pub mod risk_prediction;
 pub mod stats;
 pub mod temperatures;
 pub mod user_settings;

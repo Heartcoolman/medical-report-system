@@ -40,6 +40,7 @@ import type {
   UserInfo,
   AuditLog,
   HealthAssessment,
+  RiskPrediction,
   DeviceSession,
 } from './types';
 
@@ -518,6 +519,14 @@ export const api = {
     getCache(patientId: string) {
       return request<{ content: HealthAssessment; created_at: string } | null>(
         `/patients/${patientId}/health-assessment-cache`,
+      );
+    },
+  },
+
+  riskPrediction: {
+    get(patientId: string, refresh = false) {
+      return request<RiskPrediction>(
+        `/patients/${patientId}/risk-prediction${refresh ? '?refresh=1' : ''}`,
       );
     },
   },
