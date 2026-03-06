@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use utoipa::ToSchema;
 
 // --- Typed Enums ---
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum Gender {
     #[serde(rename = "男")]
     Male,
@@ -20,7 +21,7 @@ impl fmt::Display for Gender {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub enum ItemStatus {
     #[serde(rename = "critical_high")]
     CriticalHigh,
@@ -64,7 +65,7 @@ impl ItemStatus {
 
 // --- Domain Models ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Patient {
     pub id: String,
     pub name: String,
@@ -77,7 +78,7 @@ pub struct Patient {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Report {
     pub id: String,
     pub patient_id: String,
@@ -90,7 +91,7 @@ pub struct Report {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TestItem {
     pub id: String,
     pub report_id: String,
@@ -103,14 +104,14 @@ pub struct TestItem {
     pub canonical_name: String, // LLM 标准化名称，空则回退到 name
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReportDetail {
     #[serde(flatten)]
     pub report: Report,
     pub test_items: Vec<TestItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReportSummary {
     #[serde(flatten)]
     pub report: Report,
@@ -119,7 +120,7 @@ pub struct ReportSummary {
     pub abnormal_names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PatientWithStats {
     #[serde(flatten)]
     pub patient: Patient,
@@ -148,7 +149,7 @@ pub struct TrendItemInfo {
 
 // --- Temperature ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TemperatureRecord {
     pub id: String,
     pub patient_id: String,
@@ -455,7 +456,7 @@ pub struct BatchConfirmExpenseReq {
 
 // --- Medication ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Medication {
     pub id: String,
     pub patient_id: String,
@@ -543,7 +544,7 @@ impl PaginationParams {
 
 // --- File Upload ---
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FileUploadResult {
     pub file_id: String,
     pub url: String,

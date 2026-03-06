@@ -1,5 +1,5 @@
 import { createSignal, createResource, onMount, Show, For } from 'solid-js'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import { useToast, Button, Spinner, Modal } from '@/components'
 import { currentUser } from '@/stores/auth'
 import type { DeviceSession } from '@/api/types'
@@ -29,8 +29,8 @@ export default function Settings() {
       await api.auth.revokeDevice(id)
       toast('success', '设备已登出')
       refetchDevices()
-    } catch (err: any) {
-      toast('error', err.message || '登出设备失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '登出设备失败')
     } finally {
       setRevokingId(null)
     }
@@ -51,8 +51,8 @@ export default function Settings() {
     try {
       await api.admin.downloadBackup()
       toast('success', '备份下载已开始')
-    } catch (err: any) {
-      toast('error', err.message || '备份失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '备份失败')
     } finally {
       setBackingUp(false)
     }
@@ -68,8 +68,8 @@ export default function Settings() {
       setShowRestoreModal(false)
       setRestoreFile(null)
       setTimeout(() => window.location.reload(), 1500)
-    } catch (err: any) {
-      toast('error', err.message || '恢复失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '恢复失败')
     } finally {
       setRestoring(false)
     }
@@ -81,8 +81,8 @@ export default function Settings() {
       setLlmKey(settings.llm_api_key || '')
       setInterpretKey(settings.interpret_api_key || '')
       setZhipuKey(settings.siliconflow_api_key || '')
-    } catch (err: any) {
-      toast('error', err.message || '加载设置失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '加载设置失败')
     } finally {
       setLoading(false)
     }
@@ -100,8 +100,8 @@ export default function Settings() {
       setInterpretKey(result.interpret_api_key || '')
       setZhipuKey(result.siliconflow_api_key || '')
       toast('success', '设置已保存')
-    } catch (err: any) {
-      toast('error', err.message || '保存失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '保存失败')
     } finally {
       setSaving(false)
     }

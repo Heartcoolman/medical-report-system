@@ -7,7 +7,7 @@ import {
 import type { TableColumn } from '@/components'
 import { Table } from '@/components'
 import { cn } from '@/lib/utils'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { TestItem, CreateTestItemReq, UpdateTestItemReq, ItemStatus, EditLog } from '@/api/types'
 import { LlmInterpret } from '@/components/LlmInterpret'
 import { exportReportCSV } from '@/lib/export'
@@ -133,8 +133,8 @@ export default function ReportDetail() {
       toast('success', '报告已更新')
       setEditOpen(false)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message)
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setEditLoading(false)
     }
@@ -148,8 +148,8 @@ export default function ReportDetail() {
       toast('success', '报告已删除')
       setDeleteOpen(false)
       navigate(r ? `/patients/${r.patient_id}` : '/')
-    } catch (err: any) {
-      toast('error', err.message)
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setDeleteLoading(false)
     }
@@ -163,8 +163,8 @@ export default function ReportDetail() {
       setAddItemOpen(false)
       setItemForm({ name: '', value: '', unit: '', reference_range: '', status: 'normal' })
       refetch()
-    } catch (err: any) {
-      toast('error', err.message)
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setAddItemLoading(false)
     }
@@ -189,8 +189,8 @@ export default function ReportDetail() {
       toast('success', '检验项目已更新')
       setEditItemOpen(false)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message)
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setEditItemLoading(false)
     }
@@ -206,8 +206,8 @@ export default function ReportDetail() {
       setDeleteItemOpen(false)
       setDeleteItemTarget(null)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message)
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setDeleteItemLoading(false)
     }

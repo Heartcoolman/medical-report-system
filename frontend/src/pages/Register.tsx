@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
+import { getErrorMessage } from '@/api/client'
 import { register } from '@/stores/auth'
 import { Button, Input } from '@/components'
 
@@ -32,8 +33,8 @@ export default function Register() {
     try {
       await register(username().trim(), password())
       navigate('/', { replace: true })
-    } catch (err: any) {
-      setError(err.message || '注册失败')
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || '注册失败')
     } finally {
       setLoading(false)
     }

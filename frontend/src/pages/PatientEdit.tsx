@@ -1,7 +1,7 @@
 import { createSignal, createResource, Show } from 'solid-js'
 import { useNavigate, useParams } from '@solidjs/router'
 import { Button, Card, CardBody, CardHeader, Input, Select, Skeleton, Textarea, useToast } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { PatientReq } from '@/api/types'
 
 export default function PatientEdit() {
@@ -61,8 +61,8 @@ export default function PatientEdit() {
       await api.patients.update(params.id, data)
       toast('success', '患者信息已更新')
       navigate(`/patients/${params.id}`)
-    } catch (err: any) {
-      toast('error', err.message || '更新失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '更新失败')
     } finally {
       setSubmitting(false)
     }

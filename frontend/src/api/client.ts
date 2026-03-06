@@ -48,8 +48,7 @@ import type {
   MedLabCorrelationResult,
 } from './types';
 
-const TOKEN_KEY = 'auth_token'
-const REFRESH_TOKEN_KEY = 'refresh_token'
+import { TOKEN_KEY, REFRESH_TOKEN_KEY } from '@/lib/constants'
 
 // API base path — read from Vite env variable, default to '/api' for backward compatibility.
 // Set VITE_API_BASE=/api/v1 in .env to use the versioned endpoint.
@@ -170,9 +169,8 @@ async function request<T>(path: string, options?: RequestInit, timeout = 12000):
       throw new Error(`响应不是有效 JSON，HTTP ${res.status}`)
     }
 
-    // Capture server update_notice if present
-    if ((json as any).update_notice) {
-      _lastUpdateNotice = (json as any).update_notice
+    if (json.update_notice) {
+      _lastUpdateNotice = json.update_notice
     }
 
     if (!res.ok) {
@@ -658,6 +656,13 @@ export const api = {
     },
   },
 };
+
+/** Extract a human-readable error message from any caught value. */
+export function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  return '未知错误'
+}
 
 // ===== API 缓存层 =====
 

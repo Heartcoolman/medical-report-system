@@ -69,7 +69,8 @@ pub fn get_siliconflow_api_key(db: &crate::db::Database, user_id: &str) -> Resul
 pub fn strip_think_blocks(content: &str) -> String {
     let mut cleaned = content.to_string();
     while let Some(start) = cleaned.find("<think>") {
-        if let Some(end) = cleaned.find("</think>") {
+        if let Some(rel_end) = cleaned[start..].find("</think>") {
+            let end = start + rel_end;
             cleaned = format!("{}{}", &cleaned[..start], &cleaned[end + 8..]);
         } else {
             cleaned = cleaned[..start].to_string();

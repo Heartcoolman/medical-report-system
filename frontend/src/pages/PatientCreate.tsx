@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js'
 import { useNavigate } from '@solidjs/router'
 import { Button, Card, CardBody, CardHeader, Input, Select, Textarea, useToast } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { PatientReq } from '@/api/types'
 
 export default function PatientCreate() {
@@ -43,8 +43,8 @@ export default function PatientCreate() {
       const patient = await api.patients.create(data)
       toast('success', '患者创建成功')
       navigate(`/patients/${patient.id}`)
-    } catch (err: any) {
-      toast('error', err.message || '创建失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '创建失败')
     } finally {
       setSubmitting(false)
     }

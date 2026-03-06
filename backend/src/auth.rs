@@ -9,6 +9,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Sha256, Digest};
+use utoipa::ToSchema;
 
 use crate::error::{AppError, ErrorCode};
 use crate::AppState;
@@ -86,7 +87,7 @@ fn default_role() -> String {
     "readonly".to_string()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginReq {
     pub username: String,
     pub password: String,
@@ -96,7 +97,7 @@ pub struct LoginReq {
     pub device_type: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct AuthResponse {
     pub token: String,
     pub access_token: String,
@@ -105,7 +106,7 @@ pub struct AuthResponse {
     pub user: UserInfo,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct UserInfo {
     pub id: String,
     pub username: String,
@@ -395,7 +396,7 @@ pub async fn login(
     })
     .await?;
 
-    if !verify_password(&password, &stored_hash)? {
+    if stored_hash.is_empty() || !verify_password(&password, &stored_hash)? {
         return Err(AppError::invalid_credentials());
     }
 
@@ -778,6 +779,197 @@ pub fn require_role(
             }
         })
     }
+}
+
+// --- WeChat Login ---
+
+#[derive(Deserialize)]
+pub struct WechatLoginReq {
+    pub code: String,
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub device_type: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct WechatCode2SessionResp {
+    #[serde(default)]
+    openid: String,
+    #[serde(default)]
+    session_key: String,
+    #[serde(default)]
+    unionid: String,
+    #[serde(default)]
+    errcode: i64,
+    #[serde(default)]
+    errmsg: String,
+}
+
+async fn wechat_code2session(
+    client: &reqwest::Client,
+    appid: &str,
+    secret: &str,
+    code: &str,
+) -> Result<WechatCode2SessionResp, AppError> {
+    let wx_resp = client
+        .get("https://api.weixin.qq.com/sns/jscode2session")
+        .query(&[
+            ("appid", appid),
+            ("secret", secret),
+            ("js_code", code),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::internal(format!("微信 API 请求失败: {}", e)))?;
+
+    let wx_data: WechatCode2SessionResp = wx_resp
+        .json()
+        .await
+        .map_err(|e| AppError::internal(format!("微信 API 响应解析失败: {}", e)))?;
+
+    if wx_data.errcode != 0 {
+        return Err(AppError::new(
+            ErrorCode::AuthInvalidCredentials,
+            format!("微信登录失败: {} ({})", wx_data.errmsg, wx_data.errcode),
+        ));
+    }
+
+    if wx_data.openid.is_empty() {
+        return Err(AppError::internal("微信 API 未返回 openid"));
+    }
+
+    Ok(wx_data)
+}
+
+/// POST /api/auth/wechat-login — authenticate via WeChat Mini Program code.
+pub async fn wechat_login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<WechatLoginReq>,
+) -> Result<impl IntoResponse, AppError> {
+    if req.code.trim().is_empty() {
+        return Err(AppError::validation("微信登录 code 不能为空"));
+    }
+
+    let appid = std::env::var("WECHAT_APPID")
+        .map_err(|_| AppError::internal("环境变量 WECHAT_APPID 未设置"))?;
+    let secret = std::env::var("WECHAT_SECRET")
+        .map_err(|_| AppError::internal("环境变量 WECHAT_SECRET 未设置"))?;
+
+    let wx_data = wechat_code2session(&state.http_client, &appid, &secret, &req.code).await?;
+    let openid = wx_data.openid;
+
+    let db = state.db.clone();
+    let oid = openid.clone();
+    let existing = crate::error::run_blocking(move || db.find_user_by_wechat_openid(&oid)).await?;
+
+    let (user_id, username, role) = if let Some((uid, uname, urole)) = existing {
+        (uid, uname, urole)
+    } else {
+        let uid = uuid::Uuid::new_v4().to_string();
+        let nickname = req.nickname.as_deref().unwrap_or("");
+        let uname = if !nickname.is_empty() {
+            nickname.to_string()
+        } else {
+            format!("wx_{}", &openid[..8.min(openid.len())])
+        };
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let default_role = "readonly".to_string();
+
+        let db = state.db.clone();
+        let uid_c = uid.clone();
+        let uname_c = uname.clone();
+        let oid_c = openid.clone();
+        let role_c = default_role.clone();
+        crate::error::run_blocking(move || {
+            db.create_wechat_user(&uid_c, &uname_c, &oid_c, &role_c, &now)
+        })
+        .await?;
+
+        (uid, uname, default_role)
+    };
+
+    let access_token = create_token(&user_id, &username, &role)?;
+    let notice = check_update_notice(&headers);
+
+    let raw_refresh = generate_refresh_token();
+    let token_hash = hash_refresh_token(&raw_refresh);
+    let ip = extract_client_ip(&headers);
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let device_name = req.device_name.clone();
+    let device_type = infer_device_type(&headers, &req.device_type);
+    let expires_at = (chrono::Utc::now() + chrono::Duration::days(REFRESH_TOKEN_EXPIRY_DAYS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let db2 = state.db.clone();
+    let uid2 = user_id.clone();
+    crate::error::run_blocking(move || {
+        db2.create_refresh_token(&uid2, &token_hash, &device_name, &device_type, &ip, &ua, &expires_at)
+    })
+    .await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "token": access_token,
+            "access_token": access_token,
+            "refresh_token": raw_refresh,
+            "expires_in": ACCESS_TOKEN_EXPIRY_MINUTES * 60,
+            "user": {
+                "id": user_id,
+                "username": username,
+                "role": role,
+            }
+        },
+        "message": "微信登录成功",
+        "update_notice": notice
+    })))
+}
+
+// --- Bind WeChat ---
+
+#[derive(Deserialize)]
+pub struct BindWechatReq {
+    pub code: String,
+}
+
+/// POST /api/auth/bind-wechat — bind WeChat openid to current account.
+pub async fn bind_wechat(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(req): Json<BindWechatReq>,
+) -> Result<impl IntoResponse, AppError> {
+    if req.code.trim().is_empty() {
+        return Err(AppError::validation("微信 code 不能为空"));
+    }
+
+    let appid = std::env::var("WECHAT_APPID")
+        .map_err(|_| AppError::internal("环境变量 WECHAT_APPID 未设置"))?;
+    let secret = std::env::var("WECHAT_SECRET")
+        .map_err(|_| AppError::internal("环境变量 WECHAT_SECRET 未设置"))?;
+
+    let wx_data = wechat_code2session(&state.http_client, &appid, &secret, &req.code).await?;
+
+    let db = state.db.clone();
+    let uid = auth.0.sub.clone();
+    let openid = wx_data.openid;
+    crate::error::run_blocking(move || db.bind_wechat_openid(&uid, &openid)).await?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": null,
+        "message": "微信账号绑定成功"
+    })))
 }
 
 // --- Update notice helpers ---

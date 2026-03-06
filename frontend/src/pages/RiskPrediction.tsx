@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { RiskPrediction, RiskFactor } from '@/api/types'
 import { Button, Card, CardBody, Spinner, useToast } from '@/components'
 
@@ -71,8 +71,8 @@ export default function RiskPredictionPage() {
       const result = await api.riskPrediction.get(params.id, true)
       setPrediction(result)
       toast('success', '风险预测已更新')
-    } catch (err: any) {
-      toast('error', err.message || '刷新失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '刷新失败')
     } finally {
       setRefreshing(false)
     }

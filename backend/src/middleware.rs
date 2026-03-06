@@ -163,12 +163,21 @@ pub async fn rate_limit(
     let client_ip = extract_client_ip(&request);
     let path = request.uri().path().to_string();
 
+    // For authenticated requests, prefer user_id over IP for fairer rate limiting
+    // (mobile networks may share IPs via CGNAT).
+    // The rate_limit layer runs before jwt_auth_middleware, so we peek at the
+    // Authorization header and do a lightweight JWT payload decode (no signature
+    // verification — that's handled later by the auth middleware).
+    let global_key = extract_user_id_from_auth_header(&request)
+        .map(|uid| format!("user:{}", uid))
+        .unwrap_or_else(|| format!("ip:{}", client_ip));
+
     // Normalize path: strip /api/v1 or /api prefix to get the API-relative path
     let api_path = path
         .strip_prefix("/api/v1")
         .or_else(|| path.strip_prefix("/api"));
 
-    // Check endpoint-specific limits first
+    // Check endpoint-specific limits first (always use IP for unauthenticated endpoints)
     if let Some(p) = api_path {
         if p.starts_with("/auth") {
             if limiter.auth.check_key(&client_ip).is_err() {
@@ -176,16 +185,16 @@ pub async fn rate_limit(
                 return Err(AppError::rate_limited());
             }
         } else if p == "/upload" || p == "/ocr/parse" {
-            if limiter.upload.check_key(&client_ip).is_err() {
-                tracing::warn!("速率限制: upload 端点限流 IP={}", client_ip);
+            if limiter.upload.check_key(&global_key).is_err() {
+                tracing::warn!("速率限制: upload 端点限流 key={}", global_key);
                 return Err(AppError::rate_limited());
             }
         }
     }
 
-    // Global limit
-    if limiter.global.check_key(&client_ip).is_err() {
-        tracing::warn!("速率限制: 全局限流 IP={}", client_ip);
+    // Global limit: use user_id for authenticated, IP for anonymous
+    if limiter.global.check_key(&global_key).is_err() {
+        tracing::warn!("速率限制: 全局限流 key={}", global_key);
         return Err(AppError::rate_limited());
     }
 
@@ -266,4 +275,22 @@ pub fn validate_file_extension(filename: &str) -> Result<(), String> {
 /// Generate a safe random filename with the detected extension.
 pub fn generate_safe_filename(detected_ext: &str) -> String {
     format!("{}.{}", uuid::Uuid::new_v4(), detected_ext)
+}
+
+/// Lightweight extraction of user_id (sub) from JWT in Authorization header.
+/// Only decodes the base64 payload — no signature verification (that happens
+/// later in the auth middleware). Used for rate-limiting key selection.
+fn extract_user_id_from_auth_header(request: &Request<axum::body::Body>) -> Option<String> {
+    let auth = request.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
+    let token = auth.strip_prefix("Bearer ")?;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    use base64::Engine;
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .ok()?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload.get("sub")?.as_str().map(|s| s.to_string())
 }

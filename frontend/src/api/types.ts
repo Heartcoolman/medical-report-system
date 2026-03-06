@@ -3,6 +3,7 @@ export interface ApiResponse<T> {
   success: boolean;
   data: T | null;
   message: string;
+  update_notice?: string;
 }
 
 export interface PaginatedList<T> {

@@ -1,6 +1,6 @@
 import { createSignal, Show, For } from 'solid-js'
 import { useParams, useNavigate } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import { Button, Card, CardBody, Badge, Input, useToast } from '@/components'
 
 interface TemplateItem {
@@ -189,8 +189,8 @@ export default function ReportTemplatesPage() {
 
       toast('success', '报告已创建')
       navigate(`/reports/${report.id}`)
-    } catch (err: any) {
-      toast('error', err.message || '创建失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '创建失败')
     } finally {
       setSaving(false)
     }

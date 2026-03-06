@@ -1,5 +1,6 @@
 import { createSignal } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
+import { getErrorMessage } from '@/api/client'
 import { login } from '@/stores/auth'
 import { Button, Input } from '@/components'
 
@@ -21,8 +22,8 @@ export default function Login() {
     try {
       await login(username().trim(), password())
       navigate('/', { replace: true })
-    } catch (err: any) {
-      setError(err.message || '登录失败')
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || '登录失败')
     } finally {
       setLoading(false)
     }

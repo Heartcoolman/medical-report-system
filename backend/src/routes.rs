@@ -35,21 +35,34 @@ pub fn build_router() -> Router<AppState> {
     Router::new()
         // Prometheus metrics (no JWT)
         .route("/metrics", get(crate::metrics::metrics_handler))
+        // OpenAPI JSON spec
+        .route("/api/openapi.json", get(serve_openapi_json))
         // v1 versioned path
         .nest("/api/v1", api_routes())
         // /api as v1 alias (backward compatible)
         .nest("/api", api_routes())
+        // Swagger UI
+        .merge(
+            utoipa_swagger_ui::SwaggerUi::new("/api/docs")
+                .url("/api/openapi.json", <crate::openapi::ApiDoc as utoipa::OpenApi>::openapi())
+        )
+}
+
+async fn serve_openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(<crate::openapi::ApiDoc as utoipa::OpenApi>::openapi())
 }
 
 fn auth_routes() -> Router<AppState> {
     Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
+        .route("/auth/wechat-login", post(auth::wechat_login))
         .route("/auth/me", get(auth::get_me))
         .route("/auth/refresh", post(auth::refresh))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/devices", get(auth::list_devices))
         .route("/auth/devices/:id", axum::routing::delete(auth::revoke_device))
+        .route("/auth/bind-wechat", post(auth::bind_wechat))
 }
 
 /// Routes accessible by all authenticated users (ReadOnly and above).
@@ -223,7 +236,7 @@ fn doctor_routes() -> Router<AppState> {
             "/patients/:patient_id/reports/confirm",
             post(handlers::ocr::batch_confirm),
         )
-        // AI Interpret
+        // AI Interpret (SSE streaming)
         .route(
             "/reports/:report_id/interpret",
             get(handlers::interpret::interpret_single_report),
@@ -243,6 +256,23 @@ fn doctor_routes() -> Router<AppState> {
         .route(
             "/patients/:patient_id/trends/:item_name/interpret-time",
             get(handlers::interpret::interpret_trend_time),
+        )
+        // AI Interpret (sync, non-streaming — for clients without SSE support)
+        .route(
+            "/reports/:report_id/interpret-sync",
+            post(handlers::interpret::interpret_single_report_sync),
+        )
+        .route(
+            "/patients/:patient_id/interpret-multi-sync",
+            post(handlers::interpret::interpret_multi_sync),
+        )
+        .route(
+            "/patients/:patient_id/interpret-all-sync",
+            post(handlers::interpret::interpret_all_sync),
+        )
+        .route(
+            "/patients/:patient_id/trends/:item_name/interpret-sync",
+            post(handlers::interpret::interpret_trend_sync),
         )
         // Expense write
         .route(
@@ -292,10 +322,15 @@ fn doctor_routes() -> Router<AppState> {
             "/medications/interaction-check",
             post(handlers::drug_interaction::check_drugs_interactions),
         )
-        // AI Health Assessment
+        // AI Health Assessment (SSE streaming)
         .route(
             "/patients/:patient_id/health-assessment",
             get(handlers::health_assessment::health_assessment),
+        )
+        // AI Health Assessment (sync, non-streaming)
+        .route(
+            "/patients/:patient_id/health-assessment-sync",
+            post(handlers::health_assessment::health_assessment_sync),
         )
         // RAG Knowledge Base
         .route(

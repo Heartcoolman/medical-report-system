@@ -222,9 +222,16 @@ pub async fn ocr_parse(
     )))
 }
 
+#[derive(Deserialize)]
+pub struct ThumbnailParams {
+    pub w: Option<u32>,
+    pub q: Option<u8>,
+}
+
 pub async fn serve_file(
     State(state): State<AppState>,
     Path(file_id): Path<String>,
+    axum::extract::Query(thumb): axum::extract::Query<ThumbnailParams>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = state.db.clone();
     let fid = file_id.clone();
@@ -237,6 +244,23 @@ pub async fn serve_file(
         .await
         .map_err(|e| AppError::internal(format!("读取文件失败: {}", e)))?;
 
+    let is_image = row.mime_type.starts_with("image/");
+    let want_thumb = thumb.w.is_some() && is_image;
+
+    let (final_data, final_mime) = if want_thumb {
+        let target_width = thumb.w.unwrap().clamp(50, 2000);
+        let quality = thumb.q.unwrap_or(80).clamp(10, 100);
+        match resize_image(&data, target_width, quality) {
+            Ok(resized) => (resized, "image/jpeg".to_string()),
+            Err(e) => {
+                tracing::warn!("缩略图生成失败，返回原图: {}", e);
+                (data, row.mime_type.clone())
+            }
+        }
+    } else {
+        (data, row.mime_type.clone())
+    };
+
     let content_disposition = format!(
         "inline; filename=\"{}\"",
         row.original_name.replace('"', "\\\"")
@@ -244,11 +268,44 @@ pub async fn serve_file(
 
     Ok((
         [
-            (header::CONTENT_TYPE, row.mime_type),
+            (header::CONTENT_TYPE, final_mime),
             (header::CONTENT_DISPOSITION, content_disposition),
+            (header::CACHE_CONTROL, if want_thumb { "public, max-age=86400".to_string() } else { "no-cache".to_string() }),
         ],
-        data,
+        final_data,
     ))
+}
+
+fn resize_image(data: &[u8], target_width: u32, quality: u8) -> Result<Vec<u8>, String> {
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    let img = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|e| format!("图片格式识别失败: {}", e))?
+        .decode()
+        .map_err(|e| format!("图片解码失败: {}", e))?;
+
+    if img.width() <= target_width {
+        let mut buf = Vec::new();
+        let mut cursor = Cursor::new(&mut buf);
+        img.write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("JPEG 编码失败: {}", e))?;
+        return Ok(buf);
+    }
+
+    let resized = img.resize(
+        target_width,
+        u32::MAX,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    let mut buf = Vec::new();
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    resized
+        .write_with_encoder(encoder)
+        .map_err(|e| format!("JPEG 编码失败: {}", e))?;
+    Ok(buf)
 }
 
 /// Suggest merge groups using algorithm engine

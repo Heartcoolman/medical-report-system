@@ -3,7 +3,7 @@ import {
   Button, Card, CardBody, CardHeader,
   Modal, Spinner, useToast,
 } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type {
   ParsedExpenseItem, ExpenseCategory, DayParseResult,
 } from '@/api/types'
@@ -143,8 +143,8 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       ])
       const existingDates = new Set(existingList.map(e => e.expense_date))
       finishParse(parseResult.days, existingDates)
-    } catch (err: any) {
-      toast('error', err.message || '解析失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '解析失败')
     } finally {
       setParsing(false)
     }
@@ -274,8 +274,8 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       toast('success', `${saved} 天消费记录保存成功`)
       setStep('done')
       props.onComplete?.()
-    } catch (err: any) {
-      toast('error', err.message || '保存失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '保存失败')
     } finally {
       setSaving(false)
     }

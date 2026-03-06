@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::json;
 
 /// 统一错误码。前端根据此字段做业务判断，不再依赖 message 文本。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     // === 认证 ===
@@ -174,14 +174,28 @@ impl std::fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
+fn is_production() -> bool {
+    std::env::var("RUST_ENV")
+        .map(|v| v == "production")
+        .unwrap_or(false)
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.code.status_code();
+
+        let safe_message = if status.is_server_error() && is_production() {
+            tracing::error!(error_code = ?self.code, message = %self.message, "内部错误");
+            "服务器内部错误，请稍后重试".to_string()
+        } else {
+            self.message.clone()
+        };
+
         let body = json!({
             "success": false,
             "data": null,
             "error_code": self.code,
-            "message": self.message,
+            "message": safe_message,
         });
         (status, Json(body)).into_response()
     }

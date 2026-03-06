@@ -260,3 +260,96 @@ fn build_assessment_stream(
         yield Ok(Event::default().data("[DONE]"));
     }
 }
+
+// ===========================================================================
+// Non-streaming (sync) health assessment for clients without SSE support
+// ===========================================================================
+
+const ASSESSMENT_SYSTEM_PROMPT: &str = "你是一位面向普通患者的健康风险评估助手。\n\n请严格只输出一个 JSON 对象，不要输出任何额外文字、不要用 Markdown 代码块。\nJSON 格式如下：\n{\n  \"overall_status\": \"正常/需关注/需就医\",\n  \"risk_level\": \"低/中/高\",\n  \"summary\": \"一段简要的整体评估（2-3句话）\",\n  \"findings\": [\"发现1\", \"发现2\", ...],\n  \"recommendations\": [\"建议1\", \"建议2\", ...],\n  \"follow_up_suggestions\": [\"随访建议1\", ...],\n  \"disclaimer\": \"以上评估仅供参考，具体请遵医嘱\"\n}\n\n要求：\n1. 用大白话，避免医学术语\n2. 综合所有报告数据、用药信息、体温趋势给出整体评估\n3. 重点关注异常指标的变化趋势\n4. 给出切实可行的生活方式建议\n5. 如有严重异常，明确建议就医科室";
+
+pub async fn health_assessment_sync(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(patient_id): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let patient = run_blocking(move || db.get_patient(&pid)).await?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let reports = run_blocking(move || {
+        let summaries = db.list_reports_with_summary_by_patient(&pid)?;
+        let report_ids: Vec<String> = summaries.iter().map(|s| s.report.id.clone()).collect();
+        let items_by_report = db.get_test_items_by_report_ids(&report_ids)?;
+        let mut details = Vec::new();
+        for summary in summaries {
+            if let Some(items) = items_by_report.get(&summary.report.id) {
+                details.push((summary.report, items.clone()));
+            }
+        }
+        Ok::<_, AppError>(details)
+    })
+    .await?;
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let meds = run_blocking(move || db.list_medications_by_patient(&pid)).await?;
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let temps = run_blocking(move || db.list_temperatures_by_patient(&pid)).await?;
+
+    let mut prompt = format!(
+        "请对以下患者进行综合健康风险评估。\n\n患者信息：\n- 姓名：{}\n- 性别：{}\n- 出生日期：{}\n",
+        patient.name, patient.gender, patient.dob
+    );
+
+    if !reports.is_empty() {
+        prompt.push_str(&format!("\n共有 {} 份检查报告：\n", reports.len()));
+        for (report, items) in &reports {
+            prompt.push_str(&format!("\n【{}】 {} ({})\n", report.report_date, report.report_type, report.hospital));
+            for item in items {
+                let flag = if item.status.is_abnormal() { format!(" [{}]", item.status) } else { String::new() };
+                prompt.push_str(&format!("  - {}: {} {} (参考: {}){}\n", item.name, item.value, item.unit, item.reference_range, flag));
+            }
+        }
+    }
+
+    if !meds.is_empty() {
+        prompt.push_str("\n当前用药：\n");
+        for med in &meds {
+            let status = if med.active { "使用中" } else { "已停用" };
+            prompt.push_str(&format!("  - {} {} {}（{}）\n", med.name, med.dosage, med.frequency, status));
+        }
+    }
+
+    if !temps.is_empty() {
+        let recent: Vec<_> = temps.iter().take(10).collect();
+        prompt.push_str("\n最近体温记录：\n");
+        for t in recent {
+            prompt.push_str(&format!("  - {} : {}℃\n", t.recorded_at, t.value));
+        }
+    }
+
+    let result = super::interpret::llm_sync_call(
+        &state.http_client,
+        ASSESSMENT_SYSTEM_PROMPT,
+        &prompt,
+        &api_key,
+        4096,
+    )
+    .await?;
+
+    // Cache the result
+    if let Ok(json_str) = serde_json::to_string(&result) {
+        let db = state.db.clone();
+        let pid = patient_id;
+        let _ = run_blocking(move || db.save_assessment(&pid, &json_str)).await;
+    }
+
+    Ok(Json(ApiResponse::ok(result, "评估成功")))
+}

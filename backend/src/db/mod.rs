@@ -17,12 +17,12 @@ use crate::error::AppError;
 use crate::models::Report;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use helpers::backfill_comparator_statuses;
 use helpers::backfill_severity_statuses;
 
-const POOL_MAX_SIZE: usize = 8;
+const POOL_MAX_SIZE: u32 = 8;
+const POOL_CONNECTION_TIMEOUT_SECS: u64 = 10;
 
 /// Input for batch report creation
 pub struct BatchReportInput {
@@ -34,10 +34,49 @@ pub struct BatchReportInput {
     pub items: Vec<crate::models::TestItem>,
 }
 
+/// r2d2 connection manager for rusqlite
+struct SqliteConnectionManager {
+    path: PathBuf,
+}
+
+impl SqliteConnectionManager {
+    fn new(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+        }
+    }
+}
+
+impl r2d2::ManageConnection for SqliteConnectionManager {
+    type Connection = Connection;
+    type Error = rusqlite::Error;
+
+    fn connect(&self) -> Result<Connection, rusqlite::Error> {
+        let conn = Connection::open(&self.path)?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA cache_size = -20000;
+            PRAGMA foreign_keys = ON;
+            ",
+        )?;
+        Ok(conn)
+    }
+
+    fn is_valid(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
+        conn.execute_batch("SELECT 1")
+    }
+
+    fn has_broken(&self, _conn: &mut Connection) -> bool {
+        false
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
-    db_path: Arc<PathBuf>,
-    pool: Arc<Mutex<Vec<Connection>>>,
+    pool: r2d2::Pool<SqliteConnectionManager>,
 }
 
 impl Database {
@@ -48,7 +87,18 @@ impl Database {
             }
         }
 
-        let conn = Self::open_connection(path)?;
+        let manager = SqliteConnectionManager::new(path);
+        let pool = r2d2::Pool::builder()
+            .max_size(POOL_MAX_SIZE)
+            .connection_timeout(std::time::Duration::from_secs(POOL_CONNECTION_TIMEOUT_SECS))
+            .test_on_check_out(true)
+            .build(manager)
+            .map_err(|e| AppError::internal(format!("连接池初始化失败: {}", e)))?;
+
+        // Run migrations on a dedicated connection
+        let conn = pool
+            .get()
+            .map_err(|e| AppError::internal(format!("获取迁移连接失败: {}", e)))?;
 
         conn.execute_batch(
             r#"
@@ -157,7 +207,7 @@ impl Database {
             );
             CREATE TABLE IF NOT EXISTS audit_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
+                user_id TEXT,
                 action TEXT NOT NULL,
                 resource_type TEXT NOT NULL,
                 resource_id TEXT,
@@ -243,6 +293,16 @@ impl Database {
                 FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_rag_patient ON rag_embeddings(patient_id, chunk_type);
+            CREATE TABLE IF NOT EXISTS patient_assignments (
+                user_id TEXT NOT NULL,
+                patient_id TEXT NOT NULL,
+                assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, patient_id),
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_patient_assignments_patient
+                ON patient_assignments(patient_id);
             "#,
         )?;
 
@@ -250,7 +310,7 @@ impl Database {
         conn.execute_batch(
             "ALTER TABLE temperature_records ADD COLUMN location TEXT NOT NULL DEFAULT ''",
         )
-        .ok(); // ignore error if column already exists
+        .ok();
 
         // Migration: add operator columns to edit_logs
         let _ = conn.execute("ALTER TABLE edit_logs ADD COLUMN operator_id TEXT", []);
@@ -264,56 +324,123 @@ impl Database {
         // Migration: add risk_level column to patients
         let _ = conn.execute("ALTER TABLE patients ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low'", []);
 
+        // Migration: add third-party auth columns to users
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN wechat_openid TEXT", []);
+        let _ = conn.execute("ALTER TABLE users ADD COLUMN apple_id TEXT", []);
+        let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wechat_openid ON users(wechat_openid) WHERE wechat_openid IS NOT NULL", []);
+        let _ = conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id) WHERE apple_id IS NOT NULL", []);
+
+        // Migration: make password_hash nullable for third-party-only accounts
+        // SQLite doesn't support ALTER COLUMN, but new rows can insert '' for password_hash
+
         backfill_comparator_statuses(&conn)?;
         backfill_severity_statuses(&conn)?;
 
-        Ok(Self {
-            db_path: Arc::new(PathBuf::from(path)),
-            pool: Arc::new(Mutex::new(Vec::with_capacity(POOL_MAX_SIZE))),
-        })
-    }
-
-    fn open_connection(path: impl AsRef<Path>) -> Result<Connection, AppError> {
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA cache_size = -20000;
-            PRAGMA foreign_keys = ON;
-        ",
-        )?;
-        Ok(conn)
-    }
-
-    fn acquire(&self) -> Result<Connection, AppError> {
-        if let Ok(mut pool) = self.pool.lock() {
-            if let Some(conn) = pool.pop() {
-                return Ok(conn);
-            }
-        }
-        Self::open_connection(&*self.db_path)
-    }
-
-    fn release(&self, conn: Connection) {
-        if let Ok(mut pool) = self.pool.lock() {
-            if pool.len() < POOL_MAX_SIZE {
-                pool.push(conn);
-            }
-        }
+        Ok(Self { pool })
     }
 
     pub fn with_conn<T>(
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T, AppError>,
     ) -> Result<T, AppError> {
-        let mut conn = self.acquire()?;
-        let result = f(&mut conn);
-        if result.is_ok() {
-            self.release(conn);
+        let mut conn = self.pool.get().map_err(|e| {
+            AppError::internal(format!("获取数据库连接失败: {}", e))
+        })?;
+        f(&mut conn)
+    }
+
+    /// Assign a patient to a user (for resource-level access control)
+    pub fn assign_patient_to_user(&self, user_id: &str, patient_id: &str) -> Result<(), AppError> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO patient_assignments (user_id, patient_id) VALUES (?1, ?2)",
+                rusqlite::params![user_id, patient_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Check if a user has access to a patient (Admin always has access)
+    pub fn user_has_patient_access(&self, user_id: &str, patient_id: &str, role: &str) -> Result<bool, AppError> {
+        if role == "admin" {
+            return Ok(true);
         }
-        result
+        self.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM patient_assignments WHERE user_id = ?1 AND patient_id = ?2",
+                rusqlite::params![user_id, patient_id],
+                |row| row.get(0),
+            )?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Find a user by WeChat openid. Returns (id, username, role).
+    pub fn find_user_by_wechat_openid(&self, openid: &str) -> Result<Option<(String, String, String)>, AppError> {
+        self.with_conn(|conn| {
+            let result = conn.query_row(
+                "SELECT id, username, role FROM users WHERE wechat_openid = ?1",
+                rusqlite::params![openid],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            );
+            match result {
+                Ok(tuple) => Ok(Some(tuple)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(AppError::from(e)),
+            }
+        })
+    }
+
+    /// Create a new user via WeChat login (no password).
+    pub fn create_wechat_user(
+        &self,
+        user_id: &str,
+        username: &str,
+        openid: &str,
+        role: &str,
+        created_at: &str,
+    ) -> Result<(), AppError> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, role, created_at, wechat_openid) VALUES (?1, ?2, '', ?3, ?4, ?5)",
+                rusqlite::params![user_id, username, role, created_at, openid],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Bind a WeChat openid to an existing user account.
+    pub fn bind_wechat_openid(&self, user_id: &str, openid: &str) -> Result<(), AppError> {
+        self.with_conn(|conn| {
+            let existing: Option<String> = conn.query_row(
+                "SELECT id FROM users WHERE wechat_openid = ?1 AND id != ?2",
+                rusqlite::params![openid, user_id],
+                |row| row.get(0),
+            ).ok();
+            if existing.is_some() {
+                return Err(AppError::new(
+                    crate::error::ErrorCode::AuthUsernameConflict,
+                    "该微信账号已绑定其他用户",
+                ));
+            }
+            conn.execute(
+                "UPDATE users SET wechat_openid = ?1 WHERE id = ?2",
+                rusqlite::params![openid, user_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// List patient IDs assigned to a user
+    pub fn list_assigned_patient_ids(&self, user_id: &str) -> Result<Vec<String>, AppError> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT patient_id FROM patient_assignments WHERE user_id = ?1",
+            )?;
+            let ids = stmt.query_map(rusqlite::params![user_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok(ids)
+        })
     }
 }
 
@@ -692,5 +819,95 @@ mod tests {
     fn pinyin_helpers_mixed_chars() {
         assert_eq!(to_pinyin_string("C反应蛋白"), "cfanyingdanbai");
         assert_eq!(to_pinyin_initials("C反应蛋白"), "cfydb");
+    }
+
+    // --- r2d2 connection pool integration tests ---
+
+    use crate::models::Gender;
+
+    fn make_test_db() -> super::Database {
+        std::fs::create_dir_all("test_data").ok();
+        let path = format!("test_data/test_{}.db", uuid::Uuid::new_v4());
+        super::Database::new(&path).expect("test db init")
+    }
+
+    fn make_patient(name: &str, gender: Gender) -> crate::models::Patient {
+        crate::models::Patient {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.into(),
+            gender,
+            dob: "1990-01-01".into(),
+            phone: format!("138{:08}", rand::random::<u32>() % 100000000),
+            id_number: format!("110101{:012}", rand::random::<u64>() % 1000000000000),
+            notes: "".into(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn pool_create_and_get_patient() {
+        let db = make_test_db();
+        let p = make_patient("张三", Gender::Male);
+        db.create_patient(&p).unwrap();
+        let found = db.get_patient(&p.id).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "张三");
+    }
+
+    #[test]
+    fn pool_update_and_delete_patient() {
+        let db = make_test_db();
+        let mut p = make_patient("李四", Gender::Female);
+        db.create_patient(&p).unwrap();
+        p.name = "李四改".into();
+        db.update_patient(&p).unwrap();
+        let found = db.get_patient(&p.id).unwrap().unwrap();
+        assert_eq!(found.name, "李四改");
+
+        db.delete_patient(&p.id).unwrap();
+        assert!(db.get_patient(&p.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn pool_patient_assignments() {
+        let db = make_test_db();
+        let user_id = uuid::Uuid::new_v4().to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![&user_id, "testuser", "hash", "doctor", "2024-01-01T00:00:00Z"],
+            )?;
+            Ok(())
+        }).unwrap();
+
+        let p = make_patient("测试", Gender::Male);
+        let pid = p.id.clone();
+        db.create_patient(&p).unwrap();
+
+        assert!(!db.user_has_patient_access(&user_id, &pid, "doctor").unwrap());
+        assert!(db.user_has_patient_access(&user_id, &pid, "admin").unwrap());
+
+        db.assign_patient_to_user(&user_id, &pid).unwrap();
+        assert!(db.user_has_patient_access(&user_id, &pid, "doctor").unwrap());
+        assert!(db.list_assigned_patient_ids(&user_id).unwrap().contains(&pid));
+    }
+
+    #[test]
+    fn pool_concurrent_access() {
+        let db = make_test_db();
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let db = db.clone();
+                std::thread::spawn(move || {
+                    let p = make_patient(&format!("并发{}", i), Gender::Male);
+                    db.create_patient(&p).unwrap();
+                    assert!(db.get_patient(&p.id).unwrap().is_some());
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread join");
+        }
     }
 }

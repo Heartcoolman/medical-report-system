@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { InteractionCheckResult, DrugInteraction as DrugInteractionType } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { Button, Card, CardBody, Badge, Input, useToast, Spinner } from '@/components'
@@ -25,8 +25,8 @@ export default function DrugInteraction() {
       if (data.interactions.length === 0) {
         toast('success', '未发现药物相互作用')
       }
-    } catch (err: any) {
-      toast('error', err.message || '检查失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '检查失败')
     } finally {
       setLoading(false)
     }

@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { A } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { UserInfo } from '@/api/types'
 import { Button, Card, CardBody, Badge, Modal, Select, useToast, Spinner, Empty } from '@/components'
 
@@ -36,8 +36,8 @@ export default function AdminUsers() {
       toast('success', `${user.username} 的角色已更新为 ${ROLE_LABELS[newRole()] || newRole()}`)
       setEditingUser(null)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message || '更新失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '更新失败')
     } finally {
       setSaving(false)
     }
@@ -52,8 +52,8 @@ export default function AdminUsers() {
       toast('success', `用户 ${user.username} 已删除`)
       setDeleteUser(null)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message || '删除失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '删除失败')
     } finally {
       setDeleting(false)
     }

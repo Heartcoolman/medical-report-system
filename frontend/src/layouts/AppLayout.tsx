@@ -361,6 +361,18 @@ function Breadcrumbs() {
     } else if (path.match(/^\/patients\/[^/]+\/health-assessment$/)) {
       parts.push({ label: '患者详情', href: path.replace('/health-assessment', '') })
       parts.push({ label: 'AI 健康评估' })
+    } else if (path.match(/^\/patients\/[^/]+\/risk-prediction$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/risk-prediction', '') })
+      parts.push({ label: '风险预测' })
+    } else if (path.match(/^\/patients\/[^/]+\/rag-assistant$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/rag-assistant', '') })
+      parts.push({ label: 'AI 问答助手' })
+    } else if (path.match(/^\/patients\/[^/]+\/drug-interaction$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/drug-interaction', '') })
+      parts.push({ label: '药物相互作用' })
+    } else if (path.match(/^\/patients\/[^/]+\/med-lab-correlation$/)) {
+      parts.push({ label: '患者详情', href: path.replace('/med-lab-correlation', '') })
+      parts.push({ label: '用药-检验关联' })
     } else if (path.match(/^\/expenses\/[^/]+$/)) {
       parts.push({ label: '消费详情' })
     }

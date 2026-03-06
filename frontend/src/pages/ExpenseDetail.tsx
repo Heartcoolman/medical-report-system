@@ -3,7 +3,7 @@ import { useParams, useNavigate } from '@solidjs/router'
 import {
   Button, Card, CardBody, CardHeader, Spinner, useToast, Modal,
 } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { ExpenseItem } from '@/api/types'
 import {
   EXPENSE_CATEGORY_LABELS as CATEGORY_LABELS,
@@ -47,8 +47,8 @@ export default function ExpenseDetail() {
       await api.expenses.delete(params.id as string)
       toast('success', '消费记录已删除')
       navigate(-1)
-    } catch (err: any) {
-      toast('error', err.message || '删除失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '删除失败')
     } finally {
       setDeleting(false)
       setShowDeleteModal(false)

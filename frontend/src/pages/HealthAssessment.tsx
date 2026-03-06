@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { HealthAssessment } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { Button, Card, CardBody, Badge, Spinner, useToast } from '@/components'
@@ -102,9 +102,10 @@ export default function HealthAssessmentPage() {
           } catch {}
         }
       }
-    } catch (err: any) {
-      setError(err.message || '评估失败')
-      toast('error', err.message || '评估失败')
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err) || '评估失败'
+      setError(msg)
+      toast('error', msg)
     } finally {
       setLoading(false)
     }

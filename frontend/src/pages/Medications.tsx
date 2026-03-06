@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { Medication, DetectedDrug } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { Button, Card, CardBody, Badge, Modal, Input, useToast, Empty } from '@/components'
@@ -71,8 +71,8 @@ export default function Medications() {
         setShowAdd(false)
       }
       refetch()
-    } catch (err: any) {
-      toast('error', err.message || '操作失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     } finally {
       setSaving(false)
     }
@@ -83,8 +83,8 @@ export default function Medications() {
       await api.medications.update(med.id, { active: !med.active })
       toast('success', med.active ? '已停用' : '已启用')
       refetch()
-    } catch (err: any) {
-      toast('error', err.message || '操作失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '操作失败')
     }
   }
 
@@ -96,8 +96,8 @@ export default function Medications() {
       toast('success', '用药记录已删除')
       setDeleteMedId(null)
       refetch()
-    } catch (err: any) {
-      toast('error', err.message || '删除失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '删除失败')
     }
   }
 

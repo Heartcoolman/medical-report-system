@@ -5,6 +5,7 @@ use axum::{
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError};
 use crate::handlers;
 use crate::models::ApiResponse;
@@ -58,6 +59,7 @@ pub struct MedLabCorrelationQuery {
 // ---------------------------------------------------------------------------
 
 pub async fn get_correlation(
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
     Query(query): Query<MedLabCorrelationQuery>,
@@ -256,11 +258,13 @@ pub async fn get_correlation(
     llm_candidates.truncate(3);
 
     let patient_id_for_llm = patient_id.clone();
+    let user_id = auth.0.sub.clone();
     let summaries: Vec<(usize, Option<String>)> = stream::iter(llm_candidates.into_iter().map(|(idx, prompt, _, _)| {
         let state = state.clone();
         let patient_id = patient_id_for_llm.clone();
+        let user_id = user_id.clone();
         async move {
-            let summary = match call_llm_for_summary(&state, &patient_id, &prompt).await {
+            let summary = match call_llm_for_summary(&state, &patient_id, &user_id, &prompt).await {
                 Ok(content) => Some(content),
                 Err(err) => {
                     tracing::warn!("med-lab LLM summary failed: {}", err);
@@ -335,12 +339,11 @@ fn build_llm_prompt(
 async fn call_llm_for_summary(
     state: &AppState,
     _patient_id: &str,
+    user_id: &str,
     prompt: &str,
 ) -> Result<String, String> {
-    // Try to get API key from environment
-    let api_key = std::env::var("INTERPRET_API_KEY")
-        .or_else(|_| std::env::var("DASHSCOPE_API_KEY"))
-        .map_err(|_| "未配置 LLM API KEY".to_string())?;
+    let api_key = handlers::get_interpret_api_key(&state.db, user_id)
+        .map_err(|e| e.message)?;
 
     let body = serde_json::json!({
         "model": handlers::INTERPRET_MODEL,

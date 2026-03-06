@@ -1,12 +1,14 @@
 use axum::{
     extract::{Path, Query, State},
     response::sse::{Event, KeepAlive, Sse},
+    Json,
 };
 use futures_util::StreamExt;
 use tokio_stream::Stream;
 
 use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError, ErrorCode};
+use crate::models::ApiResponse;
 use crate::AppState;
 
 use super::{INTERPRET_API_URL, INTERPRET_MODEL};
@@ -521,4 +523,211 @@ pub async fn interpret_trend_time(
 
     let stream = llm_sse_stream(state.http_client.clone(), prompt, api_key, None);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// ===========================================================================
+// Non-streaming (sync) endpoints for clients without SSE support
+// ===========================================================================
+
+const INTERPRET_SYSTEM_PROMPT: &str = "你是一位面向普通患者的检验报告解读助手。\n\n请严格只输出一个 JSON 数组（数组元素为字符串），不要输出任何额外文字、不要用 Markdown 代码块。\nJSON 格式如下：\n[\n  \"要点1（1-2句话，大白话）\",\n  \"要点2（1-2句话，大白话）\"\n]\n\n要求：\n1. 数组中每个字符串都是一个独立要点，1-2句话即可\n2. 避免医学术语；如必须使用，需在括号中用通俗话解释\n3. 如果所有指标均正常，数组里直接说明总体正常即可，不要硬找问题\n4. 对于严重异常值（如远超参考范围），要明确建议尽快就医（说明建议就诊科室方向即可）\n5. 不要给出具体药物或治疗方案\n6. 结尾请在数组最后追加一条免责声明：以上解读仅供参考，具体请遵医嘱";
+
+pub async fn llm_sync_call(
+    client: &reqwest::Client,
+    system_prompt: &str,
+    user_prompt: &str,
+    api_key: &str,
+    max_tokens: u32,
+) -> Result<serde_json::Value, AppError> {
+    let body = serde_json::json!({
+        "model": INTERPRET_MODEL,
+        "stream": false,
+        "temperature": 0.6,
+        "max_tokens": max_tokens,
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ],
+    });
+
+    let resp = crate::handlers::llm_post_with_retry(client, INTERPRET_API_URL, api_key, &body)
+        .await
+        .map_err(|e| AppError::new(ErrorCode::LlmApiFailed, format!("LLM API 调用失败: {}", e)))?;
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| AppError::internal(format!("LLM 响应解析失败: {}", e)))?;
+
+    let raw_content = crate::handlers::extract_llm_content(&resp_json)
+        .map_err(|e| AppError::new(ErrorCode::LlmApiFailed, e))?;
+
+    let json_str = crate::handlers::extract_json_block(&raw_content)
+        .map_err(|e| AppError::new(ErrorCode::LlmApiFailed, e))?;
+
+    serde_json::from_str(&json_str)
+        .map_err(|e| AppError::new(ErrorCode::LlmApiFailed, format!("解析 JSON 失败: {}", e)))
+}
+
+pub async fn interpret_single_report_sync(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
+    let db = state.db.clone();
+    let id_clone = id.clone();
+    let report = run_blocking(move || db.get_report(&id_clone)).await?;
+    let report = report.ok_or_else(|| AppError::report_not_found())?;
+
+    let db = state.db.clone();
+    let pid = report.patient_id.clone();
+    let patient = run_blocking(move || db.get_patient(&pid)).await?;
+
+    let db = state.db.clone();
+    let rid = report.id.clone();
+    let items = run_blocking(move || db.get_test_items_by_report(&rid)).await?;
+
+    let patient_ctx = if let Some(ref p) = patient {
+        format!(
+            "患者：{} {}{}\n\n",
+            p.name, p.gender,
+            if p.dob.is_empty() { String::new() } else { format!(" 出生日期: {}", p.dob) }
+        )
+    } else {
+        String::new()
+    };
+
+    let prompt = format!(
+        "{}请用大白话解读这份检验报告，并按 system 要求输出 JSON 数组（要点字符串）。\n\n{}\n\n\
+         请在要点中覆盖：这份报告主要查什么；哪些指标不正常及通俗解释；总体情况；生活上需要注意什么。",
+        patient_ctx,
+        format_report_block(&report, &items)
+    );
+
+    let result = llm_sync_call(&state.http_client, INTERPRET_SYSTEM_PROMPT, &prompt, &api_key, 2048).await?;
+
+    if let Ok(json_str) = serde_json::to_string(&result) {
+        let db = state.db.clone();
+        let rid = id;
+        let _ = run_blocking(move || db.save_interpretation(&rid, &json_str)).await;
+    }
+
+    Ok(Json(ApiResponse::ok(result, "解读成功")))
+}
+
+pub async fn interpret_multi_sync(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(patient_id): Path<String>,
+    Query(params): Query<MultiInterpretQuery>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
+    let ids: Vec<String> = params.report_ids.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if ids.is_empty() {
+        return Err(AppError::new(ErrorCode::MissingParameter, "缺少 report_ids 参数"));
+    }
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let patient = run_blocking(move || db.get_patient(&pid)).await?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
+
+    let db = state.db.clone();
+    let report_ids = ids.clone();
+    let items_by_report = run_blocking(move || db.get_test_items_by_report_ids(&report_ids)).await?;
+
+    let mut report_blocks = Vec::new();
+    for id in &ids {
+        let db = state.db.clone();
+        let id_clone = id.clone();
+        if let Some(report) = run_blocking(move || db.get_report(&id_clone)).await? {
+            let items = items_by_report.get(&report.id).cloned().unwrap_or_default();
+            report_blocks.push(format_report_block(&report, &items));
+        }
+    }
+    if report_blocks.is_empty() {
+        return Err(AppError::new(ErrorCode::NoData, "未找到指定报告"));
+    }
+
+    let prompt = format!(
+        "患者：{} {} {}\n\n以下是这位患者的 {} 份检验报告，请用大白话综合解读，并按 system 要求输出 JSON 数组：\n\n{}\n\n\
+         请在要点中覆盖：每份报告主要发现；不同报告之间的关联；同一指标是否持续异常；整体健康状况；需要注意什么以及是否建议就医。",
+        patient.name, patient.gender,
+        if patient.dob.is_empty() { String::new() } else { format!("出生日期: {}", patient.dob) },
+        report_blocks.len(), report_blocks.join("\n\n")
+    );
+
+    let result = llm_sync_call(&state.http_client, INTERPRET_SYSTEM_PROMPT, &prompt, &api_key, 2048).await?;
+    Ok(Json(ApiResponse::ok(result, "解读成功")))
+}
+
+pub async fn interpret_all_sync(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(patient_id): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let patient = run_blocking(move || db.get_patient(&pid)).await?;
+    let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
+
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let reports = run_blocking(move || db.list_reports_by_patient(&pid)).await?;
+    if reports.is_empty() {
+        return Err(AppError::new(ErrorCode::NoData, "该患者暂无报告"));
+    }
+
+    let report_ids: Vec<String> = reports.iter().map(|r| r.id.clone()).collect();
+    let db = state.db.clone();
+    let items_by_report = run_blocking(move || db.get_test_items_by_report_ids(&report_ids)).await?;
+
+    let mut report_blocks = Vec::new();
+    for report in &reports {
+        let items = items_by_report.get(&report.id).cloned().unwrap_or_default();
+        report_blocks.push(format_report_block(report, &items));
+    }
+
+    let prompt = format!(
+        "患者：{} {} {}\n\n以下是这位患者的全部 {} 份检验报告，请用大白话全面解读，并按 system 要求输出 JSON 数组：\n\n{}\n\n\
+         请在要点中覆盖：都做了哪些检查及主要发现；哪些指标不正常及通俗解释；异常指标在不同报告间的关联；同一指标是否持续异常；总体状况；最需要关注什么以及建议。",
+        patient.name, patient.gender,
+        if patient.dob.is_empty() { String::new() } else { format!("出生日期: {}", patient.dob) },
+        report_blocks.len(), report_blocks.join("\n\n")
+    );
+
+    let result = llm_sync_call(&state.http_client, INTERPRET_SYSTEM_PROMPT, &prompt, &api_key, 2048).await?;
+    Ok(Json(ApiResponse::ok(result, "解读成功")))
+}
+
+pub async fn interpret_trend_sync(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((patient_id, item_name)): Path<(String, String)>,
+    Query(params): Query<TrendInterpretQuery>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
+    let db = state.db.clone();
+    let pid = patient_id.clone();
+    let name = item_name.clone();
+    let rt = params.report_type.clone();
+    let points = run_blocking(move || db.get_trends(&pid, &name, rt.as_deref())).await?;
+
+    if points.is_empty() {
+        return Err(AppError::new(ErrorCode::NoData, "暂无趋势数据"));
+    }
+
+    let prompt = format!(
+        "以下是患者一个检查指标的多次结果，请按 system 要求输出 JSON 数组（要点字符串），用大白话简洁分析：\n\n{}\n\n\
+         请在要点中覆盖：趋势方向（升高/降低/波动）；是否异常及偏离程度；是否回到/远离正常区间；这种变化可能说明什么；需不需要注意或就医方向。",
+        format_trend_points(&item_name, &points)
+    );
+
+    let result = llm_sync_call(&state.http_client, INTERPRET_SYSTEM_PROMPT, &prompt, &api_key, 2048).await?;
+    Ok(Json(ApiResponse::ok(result, "趋势解读成功")))
 }

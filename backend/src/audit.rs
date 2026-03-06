@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditLog {
     pub id: i64,
-    pub user_id: Option<i64>,
+    pub user_id: Option<String>,
     pub action: String,
     pub resource_type: String,
     pub resource_id: Option<String>,
@@ -17,9 +17,9 @@ pub struct AuditLog {
 }
 
 /// Log an audit event. Called from handlers on write operations.
-/// user_id is None until authentication is integrated.
 pub fn log_audit(
     db: &Database,
+    user_id: Option<&str>,
     action: &str,
     resource_type: &str,
     resource_id: Option<&str>,
@@ -29,8 +29,8 @@ pub fn log_audit(
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO audit_logs (user_id, action, resource_type, resource_id, ip_address, details)
-             VALUES (NULL, ?1, ?2, ?3, ?4, ?5)",
-            params![action, resource_type, resource_id, ip_address, details],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![user_id, action, resource_type, resource_id, ip_address, details],
         )?;
         Ok(())
     })

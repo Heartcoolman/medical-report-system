@@ -1,6 +1,6 @@
 import { createResource, createSignal, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Card, CardBody, Badge, Spinner, Empty, Button, useToast } from '@/components'
 
@@ -39,8 +39,8 @@ export default function MedLabCorrelation() {
       const result = await api.medLabCorrelation.get(params.id, true)
       mutate(result)
       toast('success', '关联分析已更新')
-    } catch (err: any) {
-      toast('error', err.message || '重新分析失败')
+    } catch (err: unknown) {
+      toast('error', getErrorMessage(err) || '重新分析失败')
       refetch()
     } finally {
       setRefreshing(false)

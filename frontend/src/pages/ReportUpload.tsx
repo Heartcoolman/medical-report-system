@@ -5,7 +5,7 @@ import {
   Modal, Progress, Spinner, Switch, Table, useToast,
 } from '@/components'
 import type { TableColumn } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type {
   OcrParseResult, ParsedItem, SuggestGroupsResult,
   BatchReportInput, BatchConfirmReq,
@@ -162,8 +162,8 @@ export default function ReportUpload(props: ReportUploadProps) {
     let completed = 0
     const promises = fileList.map((file) =>
       api.ocr.parse(file, perFileTimeout)
-        .catch((err: any) => {
-          toast('error', `解析 ${file.name} 失败: ${err.message}`)
+        .catch((err: unknown) => {
+          toast('error', `解析 ${file.name} 失败: ${getErrorMessage(err)}`)
           return {
             file_id: '',
             file_path: '',
@@ -392,8 +392,8 @@ export default function ReportUpload(props: ReportUploadProps) {
         if (count >= 2) flags.set(gId, true)
       }
       setGroupMergeFlags(flags)
-    } catch (err: any) {
-      toast('error', `分组失败: ${err.message}`)
+    } catch (err: unknown) {
+      toast('error', `分组失败: ${getErrorMessage(err)}`)
     } finally {
       setGrouping(false)
     }
@@ -452,8 +452,8 @@ export default function ReportUpload(props: ReportUploadProps) {
       const created = await api.reports.batchConfirm(props.patientId, req)
       setSavedReports(created)
       toast('success', `成功保存 ${created.length} 份报告`)
-    } catch (err: any) {
-      toast('error', `保存失败: ${err.message}`)
+    } catch (err: unknown) {
+      toast('error', `保存失败: ${getErrorMessage(err)}`)
       setStep(2) // go back to allow retry
     } finally {
       setSaving(false)

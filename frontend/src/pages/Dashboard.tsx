@@ -153,7 +153,7 @@ function PatientCard(props: { patient: PatientWithStats; index?: number }) {
         if (!apiCache.get(`patient:${id}`)) {
           api.patients.get(id).catch(() => {})
         }
-        api.reports.listByPatient(id, { page_size: 100 }).catch(() => {})
+        api.reports.listAllByPatient(id).catch(() => {})
       }}
     >
       <Card variant="elevated" interactive class="hover:-translate-y-0.5 hover:shadow-lg">

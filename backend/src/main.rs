@@ -3,13 +3,15 @@ mod audit;
 pub mod auth;
 pub mod cache;
 mod crypto;
-mod db;
+pub mod db;
 mod error;
 mod handlers;
 pub mod metrics;
 pub mod middleware;
-mod models;
+pub mod models;
 mod ocr;
+#[allow(dead_code)]
+mod openapi;
 mod routes;
 pub mod search;
 
@@ -19,6 +21,7 @@ use axum::middleware as axum_mw;
 use axum::response::IntoResponse;
 use db::Database;
 use axum_prometheus::metrics_exporter_prometheus::PrometheusHandle;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -103,18 +106,24 @@ async fn main() {
     let patient_index = match search::PatientIndex::new("data/search_index") {
         Ok(idx) => {
             let idx = std::sync::Arc::new(idx);
-            // Rebuild index from DB
+            // Rebuild index from DB inside spawn_blocking to avoid
+            // calling tokio::sync::Mutex::blocking_lock() in async context.
             match db.list_patients() {
                 Ok(patients) => {
-                    for p in &patients {
-                        if let Err(e) = idx.add_or_update_sync(&p.id, &p.name, &p.phone, &p.notes) {
-                            tracing::warn!("索引患者 {} 失败: {}", p.id, e);
+                    let idx_clone = idx.clone();
+                    let count = patients.len();
+                    let rebuild_result = tokio::task::spawn_blocking(move || {
+                        for p in &patients {
+                            if let Err(e) = idx_clone.add_or_update_sync(&p.id, &p.name, &p.phone, &p.notes) {
+                                tracing::warn!("索引患者 {} 失败: {}", p.id, e);
+                            }
                         }
-                    }
-                    if let Err(e) = idx.commit_sync() {
-                        tracing::warn!("索引提交失败: {}", e);
-                    } else {
-                        tracing::info!("搜索索引已重建，共 {} 条患者记录", patients.len());
+                        idx_clone.commit_sync()
+                    }).await;
+                    match rebuild_result {
+                        Ok(Ok(())) => tracing::info!("搜索索引已重建，共 {} 条患者记录", count),
+                        Ok(Err(e)) => tracing::warn!("索引提交失败: {}", e),
+                        Err(e) => tracing::warn!("索引重建任务失败: {}", e),
                     }
                 }
                 Err(e) => tracing::warn!("读取患者列表失败，跳过索引重建: {}", e),
@@ -192,6 +201,7 @@ async fn main() {
         .fallback_service(
             ServeDir::new(STATIC_DIR).fallback(spa_fallback),
         )
+        .layer(CompressionLayer::new())
         .layer(axum_mw::from_fn(middleware::security_headers))
         .layer(axum_mw::from_fn(middleware::https_redirect))
         .layer(axum_mw::from_fn_with_state(
@@ -308,6 +318,10 @@ fn check_required_env_vars() {
 
     if std::env::var("DB_ENCRYPTION_KEY").map(|v| v.is_empty()).unwrap_or(true) {
         eprintln!("警告: DB_ENCRYPTION_KEY 未设置，患者敏感数据将以明文存储");
+    }
+
+    if std::env::var("WECHAT_APPID").map(|v| v.is_empty()).unwrap_or(true) {
+        eprintln!("信息: WECHAT_APPID 未设置，微信小程序登录将不可用");
     }
 }
 

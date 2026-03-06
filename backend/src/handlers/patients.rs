@@ -7,12 +7,14 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::audit;
+use crate::auth::AuthUser;
 use crate::error::{run_blocking, AppError};
 use crate::models::{ApiResponse, PaginatedList, Patient, PatientReq, PatientWithStats};
 use crate::AppState;
 
 pub async fn create_patient(
     State(state): State<AppState>,
+    auth: AuthUser,
     Json(req): Json<PatientReq>,
 ) -> Result<Json<ApiResponse<Patient>>, AppError> {
     if let Err(msg) = req.validate() {
@@ -42,9 +44,10 @@ pub async fn create_patient(
     let db = state.db.clone();
     let pid = patient.id.clone();
     let pname = patient.name.clone();
+    let uid = auth.0.sub.clone();
     let _ = run_blocking(move || {
         audit::log_audit(
-            &db, "create", "patient", Some(&pid), None,
+            &db, Some(&uid), "create", "patient", Some(&pid), None,
             Some(&format!("创建患者: {}", pname)),
         )
     }).await;
@@ -117,6 +120,7 @@ pub async fn list_patients(
 
 pub async fn update_patient(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(id): Path<String>,
     Json(req): Json<PatientReq>,
 ) -> Result<Json<ApiResponse<Patient>>, AppError> {
@@ -152,9 +156,10 @@ pub async fn update_patient(
             let db = state.db.clone();
             let pid = patient.id.clone();
             let pname = patient.name.clone();
+            let uid = auth.0.sub.clone();
             let _ = run_blocking(move || {
                 audit::log_audit(
-                    &db, "update", "patient", Some(&pid), None,
+                    &db, Some(&uid), "update", "patient", Some(&pid), None,
                     Some(&format!("更新患者: {}", pname)),
                 )
             }).await;
@@ -167,6 +172,7 @@ pub async fn update_patient(
 
 pub async fn delete_patient(
     State(state): State<AppState>,
+    auth: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let db = state.db.clone();
@@ -179,9 +185,10 @@ pub async fn delete_patient(
     }
 
     let db = state.db.clone();
+    let uid = auth.0.sub.clone();
     let _ = run_blocking(move || {
         audit::log_audit(
-            &db, "delete", "patient", Some(&id), None,
+            &db, Some(&uid), "delete", "patient", Some(&id), None,
             Some("删除患者"),
         )
     }).await;

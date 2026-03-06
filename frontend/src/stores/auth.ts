@@ -1,14 +1,12 @@
 import { createSignal } from 'solid-js'
 import { api, getLastUpdateNotice, clearUpdateNotice } from '@/api/client'
+import { TOKEN_KEY, REFRESH_TOKEN_KEY } from '@/lib/constants'
 
 export interface AuthUser {
   id: string
   username: string
   role: string
 }
-
-const TOKEN_KEY = 'auth_token'
-const REFRESH_TOKEN_KEY = 'refresh_token'
 
 const [user, setUser] = createSignal<AuthUser | null>(null)
 const [ready, setReady] = createSignal(false)
