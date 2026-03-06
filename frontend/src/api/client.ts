@@ -42,6 +42,10 @@ import type {
   HealthAssessment,
   RiskPrediction,
   DeviceSession,
+  RagQueryResult,
+  RagStatus,
+  InteractionCheckResult,
+  MedLabCorrelationResult,
 } from './types';
 
 const TOKEN_KEY = 'auth_token'
@@ -217,7 +221,7 @@ export interface AuthResponse {
 export interface UserSettings {
   llm_api_key: string
   interpret_api_key: string
-  zhipu_api_key: string
+  siliconflow_api_key: string
 }
 
 export const api = {
@@ -276,25 +280,64 @@ export const api = {
 
   patients: {
     list(params?: { search?: string; page?: number; page_size?: number }) {
-      return request<PaginatedList<PatientWithStats>>(`/patients${qs(params ?? {})}`);
+      const cacheKey = `patients:list:${JSON.stringify(params ?? {})}`
+      const cached = apiCache.get<PaginatedList<PatientWithStats>>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<PaginatedList<PatientWithStats>>(`/patients${qs(params ?? {})}`).then(data => {
+        apiCache.set(cacheKey, data, 2 * 60 * 1000)
+        return data
+      })
     },
     get(id: string) {
-      return request<Patient>(`/patients/${id}`);
+      const cacheKey = `patient:${id}`
+      const cached = apiCache.get<Patient>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<Patient>(`/patients/${id}`).then(data => {
+        apiCache.set(cacheKey, data, 5 * 60 * 1000)
+        return data
+      })
     },
     create(data: PatientReq) {
-      return request<Patient>('/patients', jsonRequest('POST',data));
+      return request<Patient>('/patients', jsonRequest('POST',data)).then(result => {
+        apiCache.invalidate('patient:')
+        apiCache.invalidate('patients:list:')
+        return result
+      })
     },
     update(id: string, data: PatientReq) {
-      return request<Patient>(`/patients/${id}`, jsonRequest('PUT',data));
+      return request<Patient>(`/patients/${id}`, jsonRequest('PUT',data)).then(result => {
+        apiCache.invalidate('patient:')
+        apiCache.invalidate('patients:list:')
+        return result
+      })
     },
     delete(id: string) {
-      return request<void>(`/patients/${id}`, { method: 'DELETE' });
+      return request<void>(`/patients/${id}`, { method: 'DELETE' }).then(result => {
+        apiCache.invalidate('patient:')
+        apiCache.invalidate('patients:list:')
+        return result
+      })
     },
   },
 
   reports: {
+    listAllByPatient(patientId: string) {
+      const cacheKey = `reports:${patientId}:all`
+      const cached = apiCache.get<ReportSummary[]>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<ReportSummary[]>(`/patients/${patientId}/reports`).then(data => {
+        apiCache.set(cacheKey, data, 3 * 60 * 1000)
+        return data
+      })
+    },
     listByPatient(patientId: string, params?: { page?: number; page_size?: number }) {
-      return request<PaginatedList<ReportSummary>>(`/patients/${patientId}/reports${qs(params ?? {})}`);
+      const cacheKey = `reports:${patientId}:${JSON.stringify(params ?? {})}`
+      const cached = apiCache.get<PaginatedList<ReportSummary>>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<PaginatedList<ReportSummary>>(`/patients/${patientId}/reports${qs(params ?? {})}`).then(data => {
+        apiCache.set(cacheKey, data, 3 * 60 * 1000)
+        return data
+      })
     },
     get(id: string) {
       return request<ReportDetail>(`/reports/${id}`);
@@ -303,13 +346,28 @@ export const api = {
       return request<InterpretationCache | null>(`/reports/${id}/interpret-cache`);
     },
     create(patientId: string, data: CreateReportReq) {
-      return request<Report>(`/patients/${patientId}/reports`, jsonRequest('POST',data));
+      return request<Report>(`/patients/${patientId}/reports`, jsonRequest('POST',data)).then(result => {
+        apiCache.invalidate(`reports:${patientId}:`)
+        return result
+      })
     },
     update(id: string, data: UpdateReportReq) {
-      return request<Report>(`/reports/${id}`, jsonRequest('PUT',data));
+      return request<Report>(`/reports/${id}`, jsonRequest('PUT',data)).then(result => {
+        apiCache.invalidate('reports:')
+        return result
+      })
     },
     delete(id: string) {
-      return request<void>(`/reports/${id}`, { method: 'DELETE' });
+      return request<void>(`/reports/${id}`, { method: 'DELETE' }).then(result => {
+        apiCache.invalidate('reports:')
+        return result
+      })
+    },
+    deleteBatch(ids: string[]) {
+      return request<void>('/reports/batch-delete', jsonRequest('POST', { ids })).then(result => {
+        apiCache.invalidate('reports:')
+        return result
+      })
     },
     mergeCheck(patientId: string, data: BatchConfirmReq) {
       return request<MergeCheckResult>(
@@ -328,7 +386,10 @@ export const api = {
       return request<ReportDetail[]>(
         `/patients/${patientId}/reports/confirm`,
         jsonRequest('POST',data),
-      );
+      ).then(result => {
+        apiCache.invalidate(`reports:${patientId}:`)
+        return result
+      })
     },
   },
 
@@ -368,14 +429,35 @@ export const api = {
   },
 
   temperatures: {
+    listAll(patientId: string) {
+      const cacheKey = `temps:${patientId}:all`
+      const cached = apiCache.get<TemperatureRecord[]>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<TemperatureRecord[]>(`/patients/${patientId}/temperatures`).then(data => {
+        apiCache.set(cacheKey, data, 3 * 60 * 1000)
+        return data
+      })
+    },
     list(patientId: string, params?: { page?: number; page_size?: number }) {
-      return request<PaginatedList<TemperatureRecord>>(`/patients/${patientId}/temperatures${qs(params ?? {})}`);
+      const cacheKey = `temps:${patientId}:${JSON.stringify(params ?? {})}`
+      const cached = apiCache.get<PaginatedList<TemperatureRecord>>(cacheKey)
+      if (cached) return Promise.resolve(cached)
+      return request<PaginatedList<TemperatureRecord>>(`/patients/${patientId}/temperatures${qs(params ?? {})}`).then(data => {
+        apiCache.set(cacheKey, data, 3 * 60 * 1000)
+        return data
+      })
     },
     create(patientId: string, data: CreateTemperatureReq) {
-      return request<TemperatureRecord>(`/patients/${patientId}/temperatures`, jsonRequest('POST',data));
+      return request<TemperatureRecord>(`/patients/${patientId}/temperatures`, jsonRequest('POST',data)).then(result => {
+        apiCache.invalidate(`temps:${patientId}:`)
+        return result
+      })
     },
     delete(id: string) {
-      return request<void>(`/temperatures/${id}`, { method: 'DELETE' });
+      return request<void>(`/temperatures/${id}`, { method: 'DELETE' }).then(result => {
+        apiCache.invalidate('temps:')
+        return result
+      })
     },
   },
 
@@ -414,6 +496,9 @@ export const api = {
     },
     list(patientId: string, params?: { page?: number; page_size?: number }) {
       return request<PaginatedList<DailyExpenseSummary>>(`/patients/${patientId}/expenses${qs(params ?? {})}`);
+    },
+    listAll(patientId: string) {
+      return request<DailyExpenseSummary[]>(`/patients/${patientId}/expenses`);
     },
     get(id: string) {
       return request<DailyExpenseDetail>(`/expenses/${id}`);
@@ -461,6 +546,28 @@ export const api = {
     },
     delete(id: string) {
       return request<void>(`/medications/${id}`, { method: 'DELETE' });
+    },
+    checkPatientInteractions(patientId: string, newDrug?: string) {
+      return request<InteractionCheckResult>(
+        `/patients/${patientId}/medications/interaction-check`,
+        jsonRequest('POST', { new_drug: newDrug }),
+      );
+    },
+    checkDrugsInteractions(drugs: string[]) {
+      return request<InteractionCheckResult>(
+        '/medications/interaction-check',
+        jsonRequest('POST', { drugs }),
+      );
+    },
+  },
+
+  medLabCorrelation: {
+    get(patientId: string, refresh = false) {
+      return request<MedLabCorrelationResult>(
+        `/patients/${patientId}/med-lab-correlation${refresh ? '?refresh=1' : ''}`,
+        undefined,
+        30000,
+      );
     },
   },
 
@@ -530,4 +637,58 @@ export const api = {
       );
     },
   },
+
+  rag: {
+    build(patientId: string) {
+      return request<{ chunks_indexed: number }>(
+        `/patients/${patientId}/rag/build`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
+        120000,
+      );
+    },
+    query(patientId: string, question: string, top_k = 5) {
+      return request<RagQueryResult>(
+        `/patients/${patientId}/rag/query`,
+        jsonRequest('POST', { question, top_k }),
+        60000,
+      );
+    },
+    status(patientId: string) {
+      return request<RagStatus>(`/patients/${patientId}/rag/status`);
+    },
+  },
 };
+
+// ===== API 缓存层 =====
+
+class ApiCache {
+  private cache = new Map<string, { data: unknown; expires: number }>()
+
+  get<T>(key: string): T | undefined {
+    const entry = this.cache.get(key)
+    if (!entry) return undefined
+    if (Date.now() > entry.expires) {
+      this.cache.delete(key)
+      return undefined
+    }
+    return entry.data as T
+  }
+
+  set<T>(key: string, data: T, ttlMs = 5 * 60 * 1000): void {
+    this.cache.set(key, { data, expires: Date.now() + ttlMs })
+  }
+
+  invalidate(keyPrefix: string): void {
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(keyPrefix)) {
+        this.cache.delete(key)
+      }
+    }
+  }
+
+  clear(): void {
+    this.cache.clear()
+  }
+}
+
+export const apiCache = new ApiCache()

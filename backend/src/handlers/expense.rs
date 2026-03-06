@@ -598,7 +598,7 @@ pub async fn parse_expense(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
-    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub)?;
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -984,7 +984,7 @@ pub async fn analyze_expense_day(
         )));
     }
 
-    let llm_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let llm_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     let client = state.http_client.clone();
     let (drug_analysis, treatment_analysis) =
         analyze_treatment(&client, &req.items, &llm_key).await.unwrap_or_else(|e| {
@@ -1057,7 +1057,7 @@ pub async fn parse_chunk(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<Vec<ParsedExpenseDay>>>, AppError> {
-    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub)?;
     let (raw_bytes, file_name) = read_upload_bytes(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -1199,7 +1199,7 @@ pub struct MergeChunksReq {
 
 /// Merge multiple chunk recognition results using LLM text model
 pub async fn merge_chunks(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<MergeChunksReq>,
 ) -> Result<Json<ApiResponse<ExpenseParseResponse>>, AppError> {
     if req.chunks.is_empty() {
@@ -1285,7 +1285,7 @@ pub async fn merge_chunks(
     let merged_days: Vec<ParsedExpenseDay> = date_keys
         .into_iter()
         .map(|date| {
-            let items = day_map.remove(&date).unwrap_or_default();
+            let items = day_map.shift_remove(&date).unwrap_or_default();
             let total: f64 = items.iter().map(|i| i.amount).sum();
             let expense_date = if date == "未知日期" {
                 String::new()

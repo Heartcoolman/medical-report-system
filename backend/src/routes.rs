@@ -33,6 +33,8 @@ fn api_routes() -> Router<AppState> {
 
 pub fn build_router() -> Router<AppState> {
     Router::new()
+        // Prometheus metrics (no JWT)
+        .route("/metrics", get(crate::metrics::metrics_handler))
         // v1 versioned path
         .nest("/api/v1", api_routes())
         // /api as v1 alias (backward compatible)
@@ -140,6 +142,11 @@ fn readonly_routes() -> Router<AppState> {
             "/patients/:patient_id/risk-prediction",
             get(handlers::risk_prediction::get_risk_prediction),
         )
+        // Med-lab correlation (read)
+        .route(
+            "/patients/:patient_id/med-lab-correlation",
+            get(handlers::med_lab_correlation::get_correlation),
+        )
         // File serving
         .route("/files/:file_id", get(handlers::ocr::serve_file))
 }
@@ -179,6 +186,10 @@ fn doctor_routes() -> Router<AppState> {
             "/reports/:report_id",
             axum::routing::put(handlers::reports::update_report)
                 .delete(handlers::reports::delete_report_handler),
+        )
+        .route(
+            "/reports/batch-delete",
+            post(handlers::reports::batch_delete_reports),
         )
         // Test items write
         .route("/test-items", post(handlers::reports::create_test_item))
@@ -272,10 +283,32 @@ fn doctor_routes() -> Router<AppState> {
             axum::routing::put(handlers::medications::update_medication)
                 .delete(handlers::medications::delete_medication),
         )
+        // Drug interaction check
+        .route(
+            "/patients/:patient_id/medications/interaction-check",
+            post(handlers::drug_interaction::check_patient_interactions),
+        )
+        .route(
+            "/medications/interaction-check",
+            post(handlers::drug_interaction::check_drugs_interactions),
+        )
         // AI Health Assessment
         .route(
             "/patients/:patient_id/health-assessment",
             get(handlers::health_assessment::health_assessment),
+        )
+        // RAG Knowledge Base
+        .route(
+            "/patients/:patient_id/rag/build",
+            post(handlers::rag::build_rag),
+        )
+        .route(
+            "/patients/:patient_id/rag/query",
+            post(handlers::rag::query_rag),
+        )
+        .route(
+            "/patients/:patient_id/rag/status",
+            get(handlers::rag::get_rag_status),
         )
         .layer(axum_mw::from_fn(auth::require_role(Role::Doctor)))
 }
@@ -310,6 +343,11 @@ fn admin_routes() -> Router<AppState> {
             "/admin/restore",
             post(handlers::backup::restore_backup)
                 .layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
+        // Search index rebuild
+        .route(
+            "/admin/search/rebuild",
+            post(handlers::patients::rebuild_search_index),
         )
         .layer(axum_mw::from_fn(auth::require_role(Role::Admin)))
 }

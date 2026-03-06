@@ -19,7 +19,7 @@ pub async fn health_assessment(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
 
     // Gather patient info
     let db = state.db.clone();
@@ -32,11 +32,12 @@ pub async fn health_assessment(
     let pid = patient_id.clone();
     let reports = run_blocking(move || {
         let summaries = db.list_reports_with_summary_by_patient(&pid)?;
+        let report_ids: Vec<String> = summaries.iter().map(|summary| summary.report.id.clone()).collect();
+        let items_by_report = db.get_test_items_by_report_ids(&report_ids)?;
         let mut details = Vec::new();
-        for s in &summaries {
-            if let Some(r) = db.get_report(&s.report.id)? {
-                let items = db.get_test_items_by_report(&r.id)?;
-                details.push((r, items));
+        for summary in summaries {
+            if let Some(items) = items_by_report.get(&summary.report.id) {
+                details.push((summary.report, items.clone()));
             }
         }
         Ok::<_, AppError>(details)
@@ -202,7 +203,12 @@ fn build_assessment_stream(
                     match parsed {
                         Ok(ref json) => {
                             if let Some((ref db, ref pid)) = save_to {
-                                let _ = db.save_assessment(pid, json);
+                                let db = db.clone();
+                                let pid = pid.clone();
+                                let json_to_save = json.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    db.save_assessment(&pid, &json_to_save)
+                                }).await;
                             }
                             yield Ok(Event::default().data(json.clone()));
                         }
@@ -239,7 +245,12 @@ fn build_assessment_stream(
             match parsed {
                 Ok(ref json) => {
                     if let Some((ref db, ref pid)) = save_to {
-                        let _ = db.save_assessment(pid, json);
+                        let db = db.clone();
+                        let pid = pid.clone();
+                        let json_to_save = json.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            db.save_assessment(&pid, &json_to_save)
+                        }).await;
                     }
                     yield Ok(Event::default().data(json.clone()));
                 }

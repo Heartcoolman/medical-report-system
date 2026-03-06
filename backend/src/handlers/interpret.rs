@@ -257,7 +257,7 @@ pub async fn interpret_single_report(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let db = state.db.clone();
     let id_clone = id.clone();
     let report = run_blocking(move || db.get_report(&id_clone)).await?;
@@ -314,7 +314,7 @@ pub async fn interpret_multi(
     Path(patient_id): Path<String>,
     Query(params): Query<MultiInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let ids: Vec<String> = params
         .report_ids
         .split(',')
@@ -332,14 +332,16 @@ pub async fn interpret_multi(
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
     let patient = patient.ok_or_else(|| AppError::patient_not_found())?;
 
+    let db = state.db.clone();
+    let report_ids = ids.clone();
+    let items_by_report = run_blocking(move || db.get_test_items_by_report_ids(&report_ids)).await?;
+
     let mut report_blocks = Vec::new();
     for id in &ids {
         let db = state.db.clone();
         let id_clone = id.clone();
         if let Some(report) = run_blocking(move || db.get_report(&id_clone)).await? {
-            let db = state.db.clone();
-            let rid = report.id.clone();
-            let items = run_blocking(move || db.get_test_items_by_report(&rid)).await?;
+            let items = items_by_report.get(&report.id).cloned().unwrap_or_default();
             report_blocks.push(format_report_block(&report, &items));
         }
     }
@@ -376,7 +378,7 @@ pub async fn interpret_all(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let db = state.db.clone();
     let pid = patient_id.clone();
     let patient = run_blocking(move || db.get_patient(&pid)).await?;
@@ -390,11 +392,13 @@ pub async fn interpret_all(
         return Err(AppError::new(ErrorCode::NoData, "该患者暂无报告"));
     }
 
+    let report_ids: Vec<String> = reports.iter().map(|report| report.id.clone()).collect();
+    let db = state.db.clone();
+    let items_by_report = run_blocking(move || db.get_test_items_by_report_ids(&report_ids)).await?;
+
     let mut report_blocks = Vec::new();
     for report in &reports {
-        let db = state.db.clone();
-        let rid = report.id.clone();
-        let items = run_blocking(move || db.get_test_items_by_report(&rid)).await?;
+        let items = items_by_report.get(&report.id).cloned().unwrap_or_default();
         report_blocks.push(format_report_block(report, &items));
     }
 
@@ -433,7 +437,7 @@ pub async fn interpret_trend(
     Path((patient_id, item_name)): Path<(String, String)>,
     Query(params): Query<TrendInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let db = state.db.clone();
     let pid = patient_id.clone();
     let name = item_name.clone();
@@ -464,7 +468,7 @@ pub async fn interpret_trend_time(
     Path((patient_id, item_name)): Path<(String, String)>,
     Query(params): Query<TrendInterpretQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>>, AppError> {
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let db = state.db.clone();
     let pid = patient_id.clone();
     let name = item_name.clone();

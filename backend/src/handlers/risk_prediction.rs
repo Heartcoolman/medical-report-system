@@ -42,7 +42,7 @@ pub async fn get_risk_prediction(
     }
 
     // 生成新预测
-    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_interpret_api_key(&state.db, &auth.0.sub)?;
     let prompt = build_risk_prompt(&state, &patient_id).await?;
 
     let body = serde_json::json!({
@@ -121,10 +121,14 @@ async fn build_risk_prompt(state: &AppState, patient_id: &str) -> Result<String,
     let pid = patient_id.to_string();
     let reports = run_blocking(move || {
         let summaries = db.list_reports_with_summary_by_patient(&pid)?;
+        let selected_reports: Vec<_> = summaries.into_iter().take(5).map(|summary| summary.report).collect();
+        let report_ids: Vec<String> = selected_reports.iter().map(|report| report.id.clone()).collect();
+        let items_by_report = db.get_test_items_by_report_ids(&report_ids)?;
+
         let mut details = Vec::new();
-        for s in summaries.iter().take(5) {
-            if let Ok(items) = db.get_test_items_by_report(&s.report.id) {
-                details.push((s.report.clone(), items));
+        for report in selected_reports {
+            if let Some(items) = items_by_report.get(&report.id) {
+                details.push((report, items.clone()));
             }
         }
         Ok::<_, AppError>(details)
@@ -181,30 +185,36 @@ async fn build_risk_prompt(state: &AppState, patient_id: &str) -> Result<String,
         .collect();
 
     if !key_items.is_empty() {
+        let db = state.db.clone();
+        let pid = patient_id.to_string();
+        let item_names: Vec<String> = key_items.iter().map(|ti| ti.item_name.clone()).collect();
+        let all_trends = run_blocking(move || {
+            let mut results = Vec::new();
+            for name in &item_names {
+                let points = db.get_trends(&pid, name, None)?;
+                results.push((name.clone(), points));
+            }
+            Ok::<_, AppError>(results)
+        })
+        .await?;
+
         prompt.push_str("\n关键指标趋势：\n");
-        for ti in &key_items {
-            let db = state.db.clone();
-            let pid = patient_id.to_string();
-            let item_name = ti.item_name.clone();
-            if let Ok(points) =
-                run_blocking(move || db.get_trends(&pid, &item_name, None)).await
-            {
-                if points.len() >= 2 {
-                    let trend = analyze_item_trends(&points);
-                    let values: Vec<String> = points
-                        .iter()
-                        .rev()
-                        .take(5)
-                        .map(|p| p.value.clone())
-                        .collect();
-                    prompt.push_str(&format!(
-                        "  {}（{}次）：{} → 趋势: {}\n",
-                        ti.item_name,
-                        points.len(),
-                        values.join("→"),
-                        trend["direction"].as_str().unwrap_or("unknown")
-                    ));
-                }
+        for (item_name, points) in &all_trends {
+            if points.len() >= 2 {
+                let trend = analyze_item_trends(points);
+                let values: Vec<String> = points
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .map(|p| p.value.clone())
+                    .collect();
+                prompt.push_str(&format!(
+                    "  {}（{}次）：{} → 趋势: {}\n",
+                    item_name,
+                    points.len(),
+                    values.join("→"),
+                    trend["direction"].as_str().unwrap_or("unknown")
+                ));
             }
         }
     }

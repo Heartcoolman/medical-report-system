@@ -15,9 +15,9 @@ export default function PatientDetail() {
   const { toast } = useToast()
 
   const [patient] = createResource(() => params.id, (id) => api.patients.get(id))
-  const [reports, { refetch }] = createResource(() => params.id, (id) => api.reports.listByPatient(id, { page_size: 100 }).then(r => r.items))
+  const [reports, { refetch }] = createResource(() => params.id, (id) => api.reports.listAllByPatient(id))
 
-  const [temperatures, { refetch: refetchTemps }] = createResource(() => params.id, (id) => api.temperatures.list(id, { page_size: 100 }).then(r => r.items))
+  const [temperatures, { refetch: refetchTemps }] = createResource(() => params.id, (id) => api.temperatures.listAll(id))
 
   const [showDeleteModal, setShowDeleteModal] = createSignal(false)
   const [deleting, setDeleting] = createSignal(false)
@@ -25,7 +25,7 @@ export default function PatientDetail() {
   const [showExpenseModal, setShowExpenseModal] = createSignal(false)
   const [showActionSheet, setShowActionSheet] = createSignal(false)
 
-  const [expenses, { refetch: refetchExpenses }] = createResource(() => params.id, (id) => api.expenses.list(id, { page_size: 100 }).then(r => r.items))
+  const [expenses, { refetch: refetchExpenses }] = createResource(() => params.id, (id) => api.expenses.listAll(id))
 
   const [deleteExpenseId, setDeleteExpenseId] = createSignal<string | null>(null)
   const [deletingExpense, setDeletingExpense] = createSignal(false)
@@ -267,12 +267,8 @@ export default function PatientDetail() {
     if (ids.length === 0) return
     setBatchDeleting(true)
     try {
-      let deleted = 0
-      for (const id of ids) {
-        await api.reports.delete(id)
-        deleted++
-      }
-      toast('success', `已删除 ${deleted} 份报告`)
+      await api.reports.deleteBatch(ids)
+      toast('success', `已删除 ${ids.length} 份报告`)
       setBatchSelected(new Set<string>())
       setBatchMode(false)
       refetch()
@@ -290,17 +286,17 @@ export default function PatientDetail() {
     if (p2 && selected.length > 0) exportAllReportsCSV(selected, p2.name)
   }
 
-  const sortedReports = () => {
+  const sortedReports = createMemo(() => {
     const list = reports() ?? []
     return [...list].sort((a, b) => b.report_date.localeCompare(a.report_date))
-  }
+  })
 
-  const totalReportPages = () => Math.max(1, Math.ceil(sortedReports().length / PAGE_SIZE))
+  const totalReportPages = createMemo(() => Math.max(1, Math.ceil(sortedReports().length / PAGE_SIZE)))
 
-  const pagedReports = () => {
+  const pagedReports = createMemo(() => {
     const start = (reportPage() - 1) * PAGE_SIZE
     return sortedReports().slice(start, start + PAGE_SIZE)
-  }
+  })
 
   const stats = createMemo(() => {
     const list = reports() ?? []
@@ -589,6 +585,14 @@ export default function PatientDetail() {
                               variant="secondary"
                               size="sm"
                               class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/rag-assistant`)}
+                            >
+                              AI 问答助手
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
                               onClick={() => navigate(`/patients/${params.id}/timeline`)}
                             >
                               健康时间线
@@ -600,6 +604,22 @@ export default function PatientDetail() {
                               onClick={() => navigate(`/patients/${params.id}/medications`)}
                             >
                               用药管理
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/drug-interaction`)}
+                            >
+                              药物相互作用检查
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              class="w-full"
+                              onClick={() => navigate(`/patients/${params.id}/med-lab-correlation`)}
+                            >
+                              用药-检验关联
                             </Button>
                           </div>
                         </div>
@@ -1456,6 +1476,20 @@ export default function PatientDetail() {
                 </button>
                 <button
                   class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/rag-assistant`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center">
+                    <svg class="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">AI 问答助手</div>
+                    <div class="text-xs text-content-secondary">基于检验数据智能问答</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
                   onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/timeline`) }}
                 >
                   <div class="w-10 h-10 rounded-full bg-success-light flex items-center justify-center">
@@ -1480,6 +1514,34 @@ export default function PatientDetail() {
                   <div>
                     <div class="font-medium text-content">用药管理</div>
                     <div class="text-xs text-content-secondary">管理用药记录</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/drug-interaction`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-error-light flex items-center justify-center">
+                    <svg class="w-5 h-5 text-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">药物相互作用检查</div>
+                    <div class="text-xs text-content-secondary">检查用药间的相互作用</div>
+                  </div>
+                </button>
+                <button
+                  class="flex items-center gap-3 w-full px-4 py-3 rounded-xl text-left hover:bg-surface-secondary transition-colors cursor-pointer"
+                  onClick={() => { setShowActionSheet(false); navigate(`/patients/${params.id}/med-lab-correlation`) }}
+                >
+                  <div class="w-10 h-10 rounded-full bg-accent/10 flex items-center justify-center">
+                    <svg class="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="font-medium text-content">用药-检验关联</div>
+                    <div class="text-xs text-content-secondary">分析用药与检验指标变化的关联</div>
                   </div>
                 </button>
 

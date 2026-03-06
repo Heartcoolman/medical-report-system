@@ -1,20 +1,24 @@
 mod algorithm_engine;
 mod audit;
 pub mod auth;
+pub mod cache;
 mod crypto;
 mod db;
 mod error;
 mod handlers;
+pub mod metrics;
 pub mod middleware;
 mod models;
 mod ocr;
 mod routes;
+pub mod search;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, Method};
 use axum::middleware as axum_mw;
 use axum::response::IntoResponse;
 use db::Database;
+use axum_prometheus::metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
@@ -34,6 +38,9 @@ pub struct AppState {
             std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
         >,
     >,
+    pub llm_cache: cache::LlmCache,
+    pub metrics_handle: PrometheusHandle,
+    pub patient_index: Option<std::sync::Arc<search::PatientIndex>>,
 }
 
 #[tokio::main]
@@ -88,6 +95,38 @@ async fn main() {
     let normalize_prefetch_locks =
         std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
+    // Initialize LLM cache and Prometheus metrics
+    let llm_cache = cache::LlmCache::new();
+    let (prometheus_layer, metrics_handle) = metrics::setup_metrics();
+
+    // Initialize Tantivy search index
+    let patient_index = match search::PatientIndex::new("data/search_index") {
+        Ok(idx) => {
+            let idx = std::sync::Arc::new(idx);
+            // Rebuild index from DB
+            match db.list_patients() {
+                Ok(patients) => {
+                    for p in &patients {
+                        if let Err(e) = idx.add_or_update_sync(&p.id, &p.name, &p.phone, &p.notes) {
+                            tracing::warn!("索引患者 {} 失败: {}", p.id, e);
+                        }
+                    }
+                    if let Err(e) = idx.commit_sync() {
+                        tracing::warn!("索引提交失败: {}", e);
+                    } else {
+                        tracing::info!("搜索索引已重建，共 {} 条患者记录", patients.len());
+                    }
+                }
+                Err(e) => tracing::warn!("读取患者列表失败，跳过索引重建: {}", e),
+            }
+            Some(idx)
+        }
+        Err(e) => {
+            tracing::warn!("搜索索引初始化失败，将降级使用 SQLite 搜索: {}", e);
+            None
+        }
+    };
+
     // CORS: read allowed origins from ALLOWED_ORIGINS env var (comma-separated)
     // Default for development: localhost:5173, 127.0.0.1:5173, localhost:3001
     let default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3001";
@@ -131,6 +170,9 @@ async fn main() {
         http_client,
         normalize_prefetch_cache,
         normalize_prefetch_locks,
+        llm_cache,
+        metrics_handle,
+        patient_index,
     };
 
     // Initialize rate limiter
@@ -147,7 +189,6 @@ async fn main() {
     let app = routes::build_router()
         .route("/", axum::routing::get(serve_spa_index))
         .route("/index.html", axum::routing::get(serve_spa_index))
-        .nest_service("/uploads", ServeDir::new(UPLOADS_DIR))
         .fallback_service(
             ServeDir::new(STATIC_DIR).fallback(spa_fallback),
         )
@@ -157,6 +198,7 @@ async fn main() {
             rate_limit_state,
             middleware::rate_limit,
         ))
+        .layer(prometheus_layer)
         .layer(cors)
         .layer(DefaultBodyLimit::max(middleware::MAX_UPLOAD_SIZE))
         .with_state(state);

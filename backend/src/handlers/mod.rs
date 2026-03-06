@@ -1,14 +1,17 @@
 pub mod admin;
 pub mod audit_handler;
 pub mod backup;
+pub mod drug_interaction;
 pub mod expense;
 pub mod health_assessment;
 pub mod interpret;
+pub mod med_lab_correlation;
 pub mod medications;
 pub mod normalize;
 pub mod ocr;
 pub mod patients;
 pub mod reports;
+pub mod rag;
 pub mod risk_prediction;
 pub mod stats;
 pub mod temperatures;
@@ -27,28 +30,38 @@ pub const LLM_MODEL_FAST: &str = "qwen3.5-plus";
 pub const INTERPRET_API_URL: &str = "https://api.pucode.com/v1/chat/completions";
 pub const INTERPRET_MODEL: &str = "gemini-3.1-pro-high";
 
+pub async fn invalidate_med_lab_cache(state: &crate::AppState, patient_id: &str) {
+    state
+        .llm_cache
+        .med_lab
+        .invalidate(&format!("medlab:{patient_id}"))
+        .await;
+}
+
 /// Read LLM_API_KEY: prefer user key, fallback to environment variable.
-pub fn get_llm_api_key(db: &crate::db::Database, user_id: &str) -> String {
+pub fn get_llm_api_key(db: &crate::db::Database, user_id: &str) -> Result<String, crate::error::AppError> {
     if let Some(key) = user_settings::get_user_api_key(db, user_id, "llm") {
-        return key;
+        return Ok(key);
     }
-    std::env::var("LLM_API_KEY").expect("环境变量 LLM_API_KEY 未设置")
+    std::env::var("LLM_API_KEY")
+        .map_err(|_| crate::error::AppError::internal("环境变量 LLM_API_KEY 未设置，请在系统设置中配置 API Key"))
 }
 
 /// Read INTERPRET_API_KEY: prefer user key, fallback to environment variable.
-pub fn get_interpret_api_key(db: &crate::db::Database, user_id: &str) -> String {
+pub fn get_interpret_api_key(db: &crate::db::Database, user_id: &str) -> Result<String, crate::error::AppError> {
     if let Some(key) = user_settings::get_user_api_key(db, user_id, "interpret") {
-        return key;
+        return Ok(key);
     }
-    std::env::var("INTERPRET_API_KEY").expect("环境变量 INTERPRET_API_KEY 未设置")
+    std::env::var("INTERPRET_API_KEY")
+        .map_err(|_| crate::error::AppError::internal("环境变量 INTERPRET_API_KEY 未设置，请在系统设置中配置 API Key"))
 }
 
 /// Read SILICONFLOW_API_KEY: prefer user key, fallback to environment variable.
-pub fn get_siliconflow_api_key(db: &crate::db::Database, user_id: &str) -> String {
+pub fn get_siliconflow_api_key(db: &crate::db::Database, user_id: &str) -> Result<String, crate::error::AppError> {
     if let Some(key) = user_settings::get_user_api_key(db, user_id, "siliconflow") {
-        return key;
+        return Ok(key);
     }
-    std::env::var("SILICONFLOW_API_KEY").unwrap_or_default()
+    Ok(std::env::var("SILICONFLOW_API_KEY").unwrap_or_default())
 }
 
 /// Strip `<think>...</think>` blocks from LLM responses.

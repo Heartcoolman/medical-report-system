@@ -16,11 +16,13 @@ mod trend_repo;
 use crate::error::AppError;
 use crate::models::Report;
 use rusqlite::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use helpers::backfill_comparator_statuses;
 use helpers::backfill_severity_statuses;
+
+const POOL_MAX_SIZE: usize = 8;
 
 /// Input for batch report creation
 pub struct BatchReportInput {
@@ -34,7 +36,8 @@ pub struct BatchReportInput {
 
 #[derive(Clone)]
 pub struct Database {
-    pub db: Arc<Mutex<Connection>>,
+    db_path: Arc<PathBuf>,
+    pool: Arc<Mutex<Vec<Connection>>>,
 }
 
 impl Database {
@@ -45,18 +48,7 @@ impl Database {
             }
         }
 
-        let conn = Connection::open(path)?;
-
-        // WAL mode + performance PRAGMAs
-        conn.execute_batch(
-            "
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA busy_timeout = 5000;
-            PRAGMA cache_size = -20000;
-            PRAGMA foreign_keys = ON;
-        ",
-        )?;
+        let conn = Self::open_connection(path)?;
 
         conn.execute_batch(
             r#"
@@ -239,6 +231,18 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS rag_embeddings (
+                id TEXT PRIMARY KEY,
+                patient_id TEXT NOT NULL,
+                chunk_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_rag_patient ON rag_embeddings(patient_id, chunk_type);
             "#,
         )?;
 
@@ -264,19 +268,52 @@ impl Database {
         backfill_severity_statuses(&conn)?;
 
         Ok(Self {
-            db: Arc::new(Mutex::new(conn)),
+            db_path: Arc::new(PathBuf::from(path)),
+            pool: Arc::new(Mutex::new(Vec::with_capacity(POOL_MAX_SIZE))),
         })
+    }
+
+    fn open_connection(path: impl AsRef<Path>) -> Result<Connection, AppError> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 5000;
+            PRAGMA cache_size = -20000;
+            PRAGMA foreign_keys = ON;
+        ",
+        )?;
+        Ok(conn)
+    }
+
+    fn acquire(&self) -> Result<Connection, AppError> {
+        if let Ok(mut pool) = self.pool.lock() {
+            if let Some(conn) = pool.pop() {
+                return Ok(conn);
+            }
+        }
+        Self::open_connection(&*self.db_path)
+    }
+
+    fn release(&self, conn: Connection) {
+        if let Ok(mut pool) = self.pool.lock() {
+            if pool.len() < POOL_MAX_SIZE {
+                pool.push(conn);
+            }
+        }
     }
 
     pub fn with_conn<T>(
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T, AppError>,
     ) -> Result<T, AppError> {
-        let mut conn = self
-            .db
-            .lock()
-            .map_err(|_| AppError::internal("数据库连接锁获取失败"))?;
-        f(&mut conn)
+        let mut conn = self.acquire()?;
+        let result = f(&mut conn);
+        if result.is_ok() {
+            self.release(conn);
+        }
+        result
     }
 }
 

@@ -146,17 +146,6 @@ pub struct TrendItemInfo {
     pub count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RiskPrediction {
-    pub risk_level: String,
-    pub risk_score: u8,
-    pub risk_factors: Vec<serde_json::Value>,
-    pub recommendations: Vec<String>,
-    pub next_review_date: Option<String>,
-    pub generated_at: String,
-    pub cached: bool,
-}
-
 // --- Temperature ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

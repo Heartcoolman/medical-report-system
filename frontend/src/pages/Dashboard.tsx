@@ -1,6 +1,6 @@
 import { createSignal, createResource, Show, For, onCleanup } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
-import { api } from '@/api/client'
+import { api, apiCache } from '@/api/client'
 import type { PatientWithStats } from '@/api/types'
 import { cn } from '@/lib/utils'
 import { Button, Card, CardBody, Input, Pagination, Skeleton, Empty, Badge, SearchBar, FloatingActionButton } from '@/components'
@@ -148,6 +148,13 @@ function PatientCard(props: { patient: PatientWithStats; index?: number }) {
     <A
       href={`/patients/${props.patient.id}`}
       class="block no-underline group"
+      onMouseEnter={() => {
+        const id = props.patient.id
+        if (!apiCache.get(`patient:${id}`)) {
+          api.patients.get(id).catch(() => {})
+        }
+        api.reports.listByPatient(id, { page_size: 100 }).catch(() => {})
+      }}
     >
       <Card variant="elevated" interactive class="hover:-translate-y-0.5 hover:shadow-lg">
         <CardBody class="p-4">

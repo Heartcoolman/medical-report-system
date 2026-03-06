@@ -3,6 +3,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
 use crate::error::{run_blocking, AppError};
@@ -45,6 +46,7 @@ pub async fn create_medication(
     let db = state.db.clone();
     let m = med.clone();
     run_blocking(move || db.create_medication(&m)).await?;
+    super::invalidate_med_lab_cache(&state, &med.patient_id).await;
     Ok(Json(ApiResponse::ok(med, "创建成功")))
 }
 
@@ -111,6 +113,7 @@ pub async fn update_medication(
             }
             let m = med.clone();
             run_blocking(move || db.update_medication(&m)).await?;
+            super::invalidate_med_lab_cache(&state, &med.patient_id).await;
             Ok(Json(ApiResponse::ok(med, "更新成功")))
         }
         None => Err(AppError::medication_not_found()),
@@ -122,7 +125,24 @@ pub async fn delete_medication(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let db = state.db.clone();
+    let id_for_lookup = id.clone();
+    let med = run_blocking(move || {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT patient_id FROM medications WHERE id = ?1",
+                rusqlite::params![id_for_lookup],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(AppError::from)
+        })
+    })
+    .await?;
+    let db = state.db.clone();
     run_blocking(move || db.delete_medication(&id)).await?;
+    if let Some(patient_id) = med {
+        super::invalidate_med_lab_cache(&state, &patient_id).await;
+    }
     Ok(Json(ApiResponse::ok_msg("删除成功")))
 }
 

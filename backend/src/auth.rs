@@ -256,8 +256,8 @@ pub async fn register(
     if req.password.len() < 6 {
         return Err(AppError::validation("密码至少 6 个字符"));
     }
-    let role = req.role.to_lowercase();
-    if !["admin", "doctor", "nurse", "readonly"].contains(&role.as_str()) {
+    let requested_role = req.role.to_lowercase();
+    if !["admin", "doctor", "nurse", "readonly"].contains(&requested_role.as_str()) {
         return Err(AppError::new(
             ErrorCode::InvalidRole,
             "角色必须是 admin, doctor, nurse, readonly 之一",
@@ -272,9 +272,30 @@ pub async fn register(
     let db = state.db.clone();
     let uid = user_id.clone();
     let uname = username.clone();
-    let r = role.clone();
-    crate::error::run_blocking(move || {
+    let requested_role_clone = requested_role.clone();
+    let (assigned_role, bootstrap_admin) = crate::error::run_blocking(move || {
         db.with_conn(|conn| {
+            let user_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM users",
+                [],
+                |row| row.get(0),
+            )?;
+
+            let assigned_role = if user_count == 0 {
+                if requested_role_clone == "readonly" {
+                    "admin".to_string()
+                } else {
+                    requested_role_clone.clone()
+                }
+            } else if requested_role_clone == "readonly" {
+                requested_role_clone.clone()
+            } else {
+                return Err(AppError::new(
+                    ErrorCode::AuthzInsufficientRole,
+                    "公开注册仅允许创建 readonly 账号；其他角色请由管理员分配",
+                ));
+            };
+
             // Check if username already exists
             let exists: bool = conn
                 .query_row(
@@ -289,14 +310,14 @@ pub async fn register(
             }
             conn.execute(
                 "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![uid, uname, password_hash, r, now],
+                rusqlite::params![uid, uname, password_hash, assigned_role, now],
             )?;
-            Ok(())
+            Ok((assigned_role, user_count == 0))
         })
     })
     .await?;
 
-    let access_token = create_token(&user_id, &username, &role)?;
+    let access_token = create_token(&user_id, &username, &assigned_role)?;
 
     // Generate refresh token
     let raw_refresh = generate_refresh_token();
@@ -331,10 +352,14 @@ pub async fn register(
                 "user": {
                     "id": user_id,
                     "username": username,
-                    "role": role,
+                    "role": assigned_role,
                 }
             },
-            "message": "注册成功"
+            "message": if bootstrap_admin {
+                "注册成功，首个账户已授予管理员权限"
+            } else {
+                "注册成功"
+            }
         })),
     ))
 }

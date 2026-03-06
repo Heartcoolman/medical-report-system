@@ -282,7 +282,7 @@ pub async fn backfill_canonical_names(
     auth: crate::auth::AuthUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     let db = state.db.clone();
 
     // Phase 1: Scan ALL test items and group their names by report_type

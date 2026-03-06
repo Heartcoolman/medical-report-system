@@ -1,10 +1,44 @@
 use crate::error::AppError;
 use crate::models::{PaginatedList, Report, ReportSummary};
 use rusqlite::{params, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::helpers::*;
 use super::Database;
+
+const ABNORMAL_NAME_SEPARATOR: &str = "||";
+
+fn abnormal_names_from_blob(blob: String) -> Vec<String> {
+    if blob.is_empty() {
+        return Vec::new();
+    }
+    blob.split(ABNORMAL_NAME_SEPARATOR)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn report_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReportSummary> {
+    let item_count = row.get::<_, i64>(8)?.max(0) as usize;
+    let abnormal_count = row.get::<_, i64>(9)?.max(0) as usize;
+    let abnormal_names_blob: String = row.get(10)?;
+
+    Ok(ReportSummary {
+        report: Report {
+            id: row.get(0)?,
+            patient_id: row.get(1)?,
+            report_type: row.get(2)?,
+            hospital: row.get(3)?,
+            report_date: row.get(4)?,
+            sample_date: row.get(5)?,
+            file_path: row.get(6)?,
+            created_at: row.get(7)?,
+        },
+        item_count,
+        abnormal_count,
+        abnormal_names: abnormal_names_from_blob(abnormal_names_blob),
+    })
+}
 
 impl Database {
     pub fn create_report(&self, report: &Report) -> Result<(), AppError> {
@@ -86,37 +120,22 @@ impl Database {
         &self,
         patient_id: &str,
     ) -> Result<Vec<ReportSummary>, AppError> {
-        let reports = self.list_reports_by_patient(patient_id)?;
         self.with_conn(|conn| {
-            let mut summaries = Vec::with_capacity(reports.len());
-            let mut stmt = conn.prepare(
-                "SELECT id, name, status FROM test_items WHERE report_id = ?1 ORDER BY id",
-            )?;
-            for report in reports {
-                let mut item_count = 0usize;
-                let mut abnormal_count = 0usize;
-                let mut abnormal_names = Vec::new();
-                let rows = stmt.query_map([&report.id], |row| {
-                    let name: String = row.get(1)?;
-                    let status: String = row.get(2)?;
-                    Ok((name, parse_status(&status)))
-                })?;
-                for row in rows {
-                    let (name, status) = row?;
-                    item_count += 1;
-                    if status.is_abnormal() {
-                        abnormal_count += 1;
-                        abnormal_names.push(name);
-                    }
-                }
-                summaries.push(ReportSummary {
-                    report,
-                    item_count,
-                    abnormal_count,
-                    abnormal_names,
-                });
-            }
-            Ok(summaries)
+            let sql = format!(
+                "SELECT r.id, r.patient_id, r.report_type, r.hospital, r.report_date, r.sample_date, r.file_path, r.created_at,
+                        COUNT(ti.id) AS item_count,
+                        COALESCE(SUM(CASE WHEN LOWER(ti.status) <> 'normal' THEN 1 ELSE 0 END), 0) AS abnormal_count,
+                        COALESCE(GROUP_CONCAT(CASE WHEN LOWER(ti.status) <> 'normal' THEN ti.name END, '{sep}'), '') AS abnormal_names
+                 FROM reports r
+                 LEFT JOIN test_items ti ON ti.report_id = r.id
+                 WHERE r.patient_id = ?1
+                 GROUP BY r.id, r.patient_id, r.report_type, r.hospital, r.report_date, r.sample_date, r.file_path, r.created_at
+                 ORDER BY r.report_date ASC, r.id ASC",
+                sep = ABNORMAL_NAME_SEPARATOR,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map([patient_id], report_summary_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
@@ -127,7 +146,6 @@ impl Database {
         page_size: usize,
     ) -> Result<PaginatedList<ReportSummary>, AppError> {
         self.with_conn(|conn| {
-            // 1. COUNT(*) for total
             let total: usize = conn
                 .query_row(
                     "SELECT COUNT(*) FROM reports WHERE patient_id = ?1",
@@ -137,59 +155,32 @@ impl Database {
                 .try_into()
                 .unwrap_or(0);
 
-            // 2. Get paginated reports with LIMIT/OFFSET
             let offset = (page.max(1) - 1) * page_size;
-            let limit_i64 = page_size as i64;
-            let offset_i64 = offset as i64;
-            let mut stmt = conn.prepare(
-                "SELECT id, patient_id, report_type, hospital, report_date, sample_date, file_path, created_at
-                 FROM reports WHERE patient_id = ?1 ORDER BY report_date ASC, id ASC
-                 LIMIT ?2 OFFSET ?3",
-            )?;
-            let reports = stmt
-                .query_map(params![patient_id, limit_i64, offset_i64], |row| {
-                    Ok(Report {
-                        id: row.get(0)?,
-                        patient_id: row.get(1)?,
-                        report_type: row.get(2)?,
-                        hospital: row.get(3)?,
-                        report_date: row.get(4)?,
-                        sample_date: row.get(5)?,
-                        file_path: row.get(6)?,
-                        created_at: row.get(7)?,
-                    })
-                })?
+            let sql = format!(
+                "WITH paged_reports AS (
+                    SELECT id, patient_id, report_type, hospital, report_date, sample_date, file_path, created_at
+                    FROM reports
+                    WHERE patient_id = ?1
+                    ORDER BY report_date ASC, id ASC
+                    LIMIT ?2 OFFSET ?3
+                 )
+                 SELECT pr.id, pr.patient_id, pr.report_type, pr.hospital, pr.report_date, pr.sample_date, pr.file_path, pr.created_at,
+                        COUNT(ti.id) AS item_count,
+                        COALESCE(SUM(CASE WHEN LOWER(ti.status) <> 'normal' THEN 1 ELSE 0 END), 0) AS abnormal_count,
+                        COALESCE(GROUP_CONCAT(CASE WHEN LOWER(ti.status) <> 'normal' THEN ti.name END, '{sep}'), '') AS abnormal_names
+                 FROM paged_reports pr
+                 LEFT JOIN test_items ti ON ti.report_id = pr.id
+                 GROUP BY pr.id, pr.patient_id, pr.report_type, pr.hospital, pr.report_date, pr.sample_date, pr.file_path, pr.created_at
+                 ORDER BY pr.report_date ASC, pr.id ASC",
+                sep = ABNORMAL_NAME_SEPARATOR,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let summaries = stmt
+                .query_map(
+                    params![patient_id, page_size as i64, offset as i64],
+                    report_summary_from_row,
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-
-            // 3. Enrich each report with item counts
-            let mut summaries = Vec::with_capacity(reports.len());
-            let mut item_stmt = conn.prepare(
-                "SELECT id, name, status FROM test_items WHERE report_id = ?1 ORDER BY id",
-            )?;
-            for report in reports {
-                let mut item_count = 0usize;
-                let mut abnormal_count = 0usize;
-                let mut abnormal_names = Vec::new();
-                let rows = item_stmt.query_map([&report.id], |row| {
-                    let name: String = row.get(1)?;
-                    let status: String = row.get(2)?;
-                    Ok((name, parse_status(&status)))
-                })?;
-                for row in rows {
-                    let (name, status) = row?;
-                    item_count += 1;
-                    if status.is_abnormal() {
-                        abnormal_count += 1;
-                        abnormal_names.push(name);
-                    }
-                }
-                summaries.push(ReportSummary {
-                    report,
-                    item_count,
-                    abnormal_count,
-                    abnormal_names,
-                });
-            }
 
             Ok(PaginatedList {
                 items: summaries,
@@ -205,19 +196,40 @@ impl Database {
         patient_id: &str,
     ) -> Result<Vec<(Report, Vec<String>)>, AppError> {
         let reports = self.list_reports_by_patient(patient_id)?;
+        if reports.is_empty() {
+            return Ok(Vec::new());
+        }
+
         self.with_conn(|conn| {
-            let mut result = Vec::with_capacity(reports.len());
-            let mut stmt =
-                conn.prepare("SELECT name FROM test_items WHERE report_id = ?1 ORDER BY id")?;
-            for report in reports {
-                let mut item_names = Vec::new();
-                let rows = stmt.query_map([&report.id], |row| row.get::<_, String>(0))?;
-                for row in rows {
-                    item_names.push(row?);
-                }
-                result.push((report, item_names));
+            let report_ids: Vec<&str> = reports.iter().map(|report| report.id.as_str()).collect();
+            let placeholders = (1..=report_ids.len())
+                .map(|idx| format!("?{}", idx))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT report_id, name
+                 FROM test_items
+                 WHERE report_id IN ({})
+                 ORDER BY report_id ASC, id ASC",
+                placeholders,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut names_by_report: HashMap<String, Vec<String>> = HashMap::new();
+            let rows = stmt.query_map(rusqlite::params_from_iter(report_ids.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (report_id, name) = row?;
+                names_by_report.entry(report_id).or_default().push(name);
             }
-            Ok(result)
+
+            Ok(reports
+                .into_iter()
+                .map(|report| {
+                    let item_names = names_by_report.remove(&report.id).unwrap_or_default();
+                    (report, item_names)
+                })
+                .collect())
         })
     }
 
@@ -278,6 +290,43 @@ impl Database {
 
     pub fn delete_report_with_index_cleanup(&self, id: &str) -> Result<(), AppError> {
         self.delete_report(id)
+    }
+
+    pub fn delete_reports_with_cleanup(&self, ids: &[String]) -> Result<Vec<String>, AppError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.with_conn(|conn| {
+            let placeholders = (1..=ids.len())
+                .map(|idx| format!("?{}", idx))
+                .collect::<Vec<_>>()
+                .join(",");
+            let select_sql = format!(
+                "SELECT DISTINCT patient_id FROM reports WHERE id IN ({})",
+                placeholders,
+            );
+            let delete_interpret_sql = format!(
+                "DELETE FROM report_interpretations WHERE report_id IN ({})",
+                placeholders,
+            );
+            let delete_report_sql = format!(
+                "DELETE FROM reports WHERE id IN ({})",
+                placeholders,
+            );
+
+            let tx = conn.transaction()?;
+            let patient_ids: Vec<String> = {
+                let mut stmt = tx.prepare(&select_sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| row.get(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+
+            tx.execute(&delete_interpret_sql, rusqlite::params_from_iter(ids.iter()))?;
+            tx.execute(&delete_report_sql, rusqlite::params_from_iter(ids.iter()))?;
+            tx.commit()?;
+            Ok(patient_ids)
+        })
     }
 
     pub fn batch_create_reports_and_items(

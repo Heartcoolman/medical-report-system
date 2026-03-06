@@ -29,7 +29,7 @@ export default function ReportDetail() {
   // Sibling reports for sidebar
   const [siblingReports] = createResource(
     () => report()?.patient_id,
-    (patientId) => api.reports.listByPatient(patientId, { page_size: 100 }).then(r => r.items),
+    (patientId) => api.reports.listAllByPatient(patientId),
   )
 
   const sortedSiblings = createMemo(() => {

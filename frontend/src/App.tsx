@@ -25,6 +25,9 @@ const Medications = lazy(() => import('./pages/Medications'))
 const ReportTemplates = lazy(() => import('./pages/ReportTemplates'))
 const HealthAssessment = lazy(() => import('./pages/HealthAssessment'))
 const RiskPrediction = lazy(() => import('./pages/RiskPrediction'))
+const RagAssistant = lazy(() => import('./pages/RagAssistant'))
+const DrugInteraction = lazy(() => import('./pages/DrugInteraction'))
+const MedLabCorrelation = lazy(() => import('./pages/MedLabCorrelation'))
 
 // Initialize auth on app load
 initAuth()
@@ -115,6 +118,9 @@ function App() {
             <Route path="/patients/:id/templates" component={ReportTemplates} />
             <Route path="/patients/:id/health-assessment" component={HealthAssessment} />
             <Route path="/patients/:id/risk-prediction" component={RiskPrediction} />
+            <Route path="/patients/:id/rag-assistant" component={RagAssistant} />
+            <Route path="/patients/:id/drug-interaction" component={DrugInteraction} />
+            <Route path="/patients/:id/med-lab-correlation" component={MedLabCorrelation} />
             <Route path="*" component={NotFound} />
           </Route>
         </Suspense>

@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::TestItem;
 use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
 
 use super::helpers::*;
 use super::Database;
@@ -47,6 +48,53 @@ impl Database {
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub fn get_test_items_by_report_ids(
+        &self,
+        report_ids: &[String],
+    ) -> Result<HashMap<String, Vec<TestItem>>, AppError> {
+        if report_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.with_conn(|conn| {
+            let placeholders = (1..=report_ids.len())
+                .map(|idx| format!("?{}", idx))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, report_id, name, value, unit, reference_range, status, canonical_name
+                 FROM test_items
+                 WHERE report_id IN ({})
+                 ORDER BY report_id ASC, id ASC",
+                placeholders,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let mut items_by_report: HashMap<String, Vec<TestItem>> = HashMap::new();
+            let rows = stmt.query_map(rusqlite::params_from_iter(report_ids.iter()), |row| {
+                Ok(TestItem {
+                    id: row.get(0)?,
+                    report_id: row.get(1)?,
+                    name: row.get(2)?,
+                    value: row.get(3)?,
+                    unit: row.get(4)?,
+                    reference_range: row.get(5)?,
+                    status: parse_status(&row.get::<_, String>(6)?),
+                    canonical_name: row.get(7)?,
+                })
+            })?;
+
+            for row in rows {
+                let item = row?;
+                items_by_report
+                    .entry(item.report_id.clone())
+                    .or_default()
+                    .push(item);
+            }
+
+            Ok(items_by_report)
         })
     }
 

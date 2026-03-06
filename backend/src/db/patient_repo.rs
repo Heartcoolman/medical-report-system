@@ -194,6 +194,51 @@ impl Database {
         })
     }
 
+    pub fn search_patients_paginated(
+        &self,
+        query: &str,
+        page: usize,
+        page_size: usize,
+    ) -> Result<PaginatedList<Patient>, AppError> {
+        let page = page.max(1);
+        let page_size = page_size.clamp(1, 100);
+        let offset = (page - 1) * page_size;
+        let pattern = format!("%{}%", query.to_lowercase());
+
+        self.with_conn(|conn| {
+            let total: usize = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM patients p
+                     JOIN patient_search s ON p.id = s.patient_id
+                     WHERE s.search_blob LIKE ?1",
+                    [&pattern],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .try_into()
+                .unwrap_or(0);
+
+            let mut stmt = conn.prepare(
+                "SELECT p.id, p.name, p.gender, p.dob, p.phone, p.id_number, p.notes, p.created_at, p.updated_at
+                 FROM patients p
+                 JOIN patient_search s ON p.id = s.patient_id
+                 WHERE s.search_blob LIKE ?1
+                 ORDER BY p.id
+                 LIMIT ?2 OFFSET ?3",
+            )?;
+            let items = stmt
+                .query_map(params![pattern, page_size as i64, offset as i64], patient_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            Ok(PaginatedList {
+                items,
+                total,
+                page,
+                page_size,
+            })
+        })
+    }
+
     /// Enrich a list of patients with report stats (report_count, last_report_date, total_abnormal).
     /// Optimized: uses 2 batch queries with IN clause instead of N+1 per-patient queries.
     fn enrich_patients_with_stats(
@@ -292,6 +337,60 @@ impl Database {
         query: &str,
     ) -> Result<Vec<PatientWithStats>, AppError> {
         let patients = self.search_patients(query)?;
+        self.enrich_patients_with_stats(patients)
+    }
+
+    pub fn search_patients_with_stats_paginated(
+        &self,
+        query: &str,
+        page: usize,
+        page_size: usize,
+    ) -> Result<PaginatedList<PatientWithStats>, AppError> {
+        let base = self.search_patients_paginated(query, page, page_size)?;
+        let items = self.enrich_patients_with_stats(base.items)?;
+        Ok(PaginatedList {
+            items,
+            total: base.total,
+            page: base.page,
+            page_size: base.page_size,
+        })
+    }
+
+    /// Get patients by a list of IDs (preserving order) and enrich with stats.
+    pub fn get_patients_by_ids_with_stats(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<PatientWithStats>, AppError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let patients = self.with_conn(|conn| {
+            let placeholders: String = (1..=ids.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, name, gender, dob, phone, id_number, notes, created_at, updated_at
+                 FROM patients WHERE id IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let patients_unordered: Vec<Patient> = stmt
+                .query_map(rusqlite::params_from_iter(ids.iter()), patient_from_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            // Reorder to match the input IDs order (relevance order from Tantivy)
+            let patient_map: HashMap<String, Patient> = patients_unordered
+                .into_iter()
+                .map(|p| (p.id.clone(), p))
+                .collect();
+            let patients: Vec<Patient> = ids
+                .iter()
+                .filter_map(|id| patient_map.get(id).cloned())
+                .collect();
+            Ok(patients)
+        })?;
+
         self.enrich_patients_with_stats(patients)
     }
 }

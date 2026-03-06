@@ -18,7 +18,7 @@ export default function ReportCompare() {
   const params = useParams<{ id: string }>()
   const [reports] = createResource(
     () => params.id,
-    (patientId) => api.reports.listByPatient(patientId, { page_size: 100 }).then(r => r.items),
+    (patientId) => api.reports.listAllByPatient(patientId),
   )
 
   const [leftId, setLeftId] = createSignal('')
@@ -116,7 +116,21 @@ export default function ReportCompare() {
         <div class="flex justify-center py-12"><Spinner size="lg" variant="orbital" /></div>
       </Show>
 
-      <Show when={reports() && !reports.loading}>
+      <Show when={reports.error && !reports.loading}>
+        <Card variant="elevated">
+          <CardBody class="p-8 text-center">
+            <div class="w-12 h-12 mx-auto rounded-full bg-error/10 flex items-center justify-center mb-3">
+              <svg class="w-6 h-6 text-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+            </div>
+            <p class="text-sm font-medium text-error mb-1">加载报告列表失败</p>
+            <p class="text-xs text-content-tertiary">{String(reports.error)}</p>
+          </CardBody>
+        </Card>
+      </Show>
+
+      <Show when={reports() && !reports.loading && !reports.error}>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div>
             <label class="form-label mb-1">左侧报告</label>

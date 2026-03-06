@@ -110,7 +110,7 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
         const ctx = canvas.getContext('2d')!
         ctx.drawImage(img, 0, 0, w, h)
         // Try WebP first, fallback to JPEG
-        const mimeType = typeof canvas.toDataURL('image/webp').startsWith('data:image/webp')
+        const mimeType = canvas.toDataURL('image/webp').startsWith('data:image/webp')
           ? 'image/webp' : 'image/jpeg'
         canvas.toBlob(
           (blob) => {
@@ -139,7 +139,7 @@ export default function ExpenseUpload(props: ExpenseUploadProps) {
       const compressed = await compressImage(f)
       const [parseResult, existingList] = await Promise.all([
         api.expenses.parse(props.patientId, compressed),
-        api.expenses.list(props.patientId, { page_size: 100 }).then(r => r.items).catch(() => [] as { expense_date: string }[]),
+        api.expenses.listAll(props.patientId).catch(() => [] as { expense_date: string }[]),
       ])
       const existingDates = new Set(existingList.map(e => e.expense_date))
       finishParse(parseResult.days, existingDates)

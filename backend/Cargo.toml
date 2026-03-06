@@ -37,3 +37,11 @@ aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
 sha2 = "0.10"
+# LLM 缓存
+moka = { version = "0.12", features = ["future"] }
+# 搜索引擎
+tantivy = "0.22"
+# Prometheus 监控
+axum-prometheus = "0.7"
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"

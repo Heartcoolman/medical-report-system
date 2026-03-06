@@ -477,3 +477,66 @@ export interface TrendItemInfo {
   item_name: string;
   count: number;
 }
+
+// --- RAG ---
+
+export interface RagSource {
+  chunk_type: string;
+  content_preview: string;
+  score: number;
+}
+
+export interface RagQueryResult {
+  answer: string;
+  sources: RagSource[];
+}
+
+export interface RagStatus {
+  indexed_chunks: number;
+  last_built: string | null;
+}
+
+export interface RagMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  sources?: RagSource[];
+}
+
+// --- Drug Interaction ---
+
+export interface DrugInteraction {
+  drug1: string
+  drug2: string
+  severity: 'high' | 'medium' | 'low'
+  description: string
+  recommendation: string
+}
+
+export interface InteractionCheckResult {
+  interactions: DrugInteraction[]
+  checked_drugs: string[]
+}
+
+// --- Med-Lab Correlation ---
+
+export interface MedLabItem {
+  item_name: string
+  canonical_name: string
+  before_avg: number | null
+  during_avg: number | null
+  change_pct: number
+  trend: 'improved' | 'worsened' | 'unchanged'
+  unit: string
+}
+
+export interface MedCorrelation {
+  drug_name: string
+  start_date: string
+  end_date: string | null
+  affected_items: MedLabItem[]
+  llm_summary: string | null
+}
+
+export interface MedLabCorrelationResult {
+  correlations: MedCorrelation[]
+}

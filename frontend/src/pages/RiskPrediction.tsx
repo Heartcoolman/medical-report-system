@@ -2,7 +2,7 @@ import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
 import { api } from '@/api/client'
 import type { RiskPrediction, RiskFactor } from '@/api/types'
-import { Button, Card, CardBody, Badge, Spinner, useToast } from '@/components'
+import { Button, Card, CardBody, Spinner, useToast } from '@/components'
 
 const LEVEL_CONFIG: Record<string, { color: string; bg: string; icon: string; label: string }> = {
   '低': {
@@ -50,7 +50,7 @@ export default function RiskPredictionPage() {
   const [refreshing, setRefreshing] = createSignal(false)
   const [prediction, setPrediction] = createSignal<RiskPrediction | null>(null)
 
-  const [initialPrediction, { refetch }] = createResource(
+  const [initialPrediction] = createResource(
     () => params.id,
     async (id) => {
       try {
@@ -90,6 +90,22 @@ export default function RiskPredictionPage() {
         <h1 class="page-title mb-1">风险预测</h1>
         <Show when={patient()}>
           <p class="sub-text mb-6">基于 {patient()!.name} 的历史检验趋势预测健康风险</p>
+        </Show>
+
+        {/* 加载失败 */}
+        <Show when={initialPrediction.error && !prediction()}>
+          <Card variant="elevated">
+            <CardBody class="p-8 text-center">
+              <div class="w-12 h-12 mx-auto rounded-full bg-error/10 flex items-center justify-center mb-3">
+                <svg class="w-6 h-6 text-error" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+              </div>
+              <p class="text-sm font-medium text-error mb-1">加载预测数据失败</p>
+              <p class="text-xs text-content-tertiary mb-4">{String(initialPrediction.error)}</p>
+              <Button variant="outline" size="sm" onClick={handleRefresh}>重试</Button>
+            </CardBody>
+          </Card>
         </Show>
 
         {/* 加载中 */}

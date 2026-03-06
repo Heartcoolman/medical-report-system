@@ -26,6 +26,10 @@ use crate::AppState;
 
 const UPLOADS_DIR: &str = "uploads";
 
+fn api_file_url(file_id: &str) -> String {
+    format!("/api/files/{}", file_id)
+}
+
 async fn save_upload_file(multipart: &mut Multipart) -> Result<(String, String, usize), AppError> {
     match multipart.next_field().await {
         Ok(Some(field)) => {
@@ -117,7 +121,7 @@ pub async fn upload_file(
     Ok(Json(ApiResponse::ok(
         FileUploadResult {
             file_id: file_id.clone(),
-            url: format!("/api/files/{}", file_id),
+            url: api_file_url(&file_id),
             original_name,
             mime_type,
             size,
@@ -141,7 +145,7 @@ pub async fn ocr_parse(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<OcrParseResult>>, AppError> {
-    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub);
+    let zhipu_key = super::get_siliconflow_api_key(&state.db, &auth.0.sub)?;
     let (file_path, file_name, size) = save_upload_file(&mut multipart).await?;
     let client = state.http_client.clone();
 
@@ -200,15 +204,17 @@ pub async fn ocr_parse(
     let sn = safe_name.clone();
     let on = file_name.clone();
     let mt = mime_type.clone();
-    let _ = tokio::task::spawn_blocking(move || {
+    let public_file_path = api_file_url(&file_id);
+    tokio::task::spawn_blocking(move || {
         db.insert_uploaded_file(&fid, &on, &sn, &mt, size, true)
     })
-    .await;
+    .await
+    .map_err(|e| AppError::internal(format!("任务执行失败: {}", e)))??;
 
     Ok(Json(ApiResponse::ok(
         OcrParseResult {
             file_id,
-            file_path,
+            file_path: public_file_path,
             file_name,
             parsed,
         },
@@ -307,7 +313,7 @@ pub async fn suggest_groups(
     State(state): State<AppState>,
     Json(req): Json<SuggestGroupsReq>,
 ) -> Result<Json<ApiResponse<SuggestGroupsResult>>, AppError> {
-    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     let empty_result = SuggestGroupsResult {
         groups: vec![0; req.files.len()],
         existing_merges: vec![],
@@ -740,7 +746,7 @@ pub async fn merge_check(
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<MergeCheckResult>>, AppError> {
-    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     tracing::info!(
         ">>> merge_check 收到请求: patient={}, reports={}",
         patient_id,
@@ -977,7 +983,7 @@ pub async fn prefetch_normalize(
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<std::collections::HashMap<String, String>>>, AppError> {
-    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     tracing::info!(
         ">>> prefetch_normalize 收到请求: patient={}, reports={}",
         patient_id,
@@ -1006,7 +1012,7 @@ pub async fn batch_confirm(
     Path(patient_id): Path<String>,
     Json(req): Json<BatchConfirmReq>,
 ) -> Result<Json<ApiResponse<Vec<ReportDetail>>>, AppError> {
-    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub);
+    let api_key = super::get_llm_api_key(&state.db, &auth.0.sub)?;
     // Validate inputs upfront (no DB needed)
     for report_req in &req.reports {
         if report_req.report_type.trim().is_empty() {
@@ -1225,6 +1231,7 @@ pub async fn batch_confirm(
         let rid = detail.report.id.clone();
         let _ = tokio::task::spawn_blocking(move || db.delete_interpretation(&rid)).await;
     }
+    super::invalidate_med_lab_cache(&state, &patient_id).await;
 
     let msg = format!("成功保存 {} 份报告", results.len());
     Ok(Json(ApiResponse::ok(results, &msg)))

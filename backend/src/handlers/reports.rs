@@ -24,6 +24,11 @@ pub struct UpdateReportReq {
     pub sample_date: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct BatchDeleteReportsReq {
+    pub ids: Vec<String>,
+}
+
 pub async fn create_report(
     State(state): State<AppState>,
     Path(patient_id): Path<String>,
@@ -56,6 +61,7 @@ pub async fn create_report(
     let db = state.db.clone();
     let pid = report.patient_id.clone();
     let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+    super::invalidate_med_lab_cache(&state, &report.patient_id).await;
     Ok(Json(ApiResponse::ok(report, "创建成功")))
 }
 
@@ -118,7 +124,37 @@ pub async fn delete_report_handler(
     // Invalidate risk prediction cache
     if !patient_id.is_empty() {
         let db = state.db.clone();
-        let _ = run_blocking(move || db.delete_risk_prediction(&patient_id)).await;
+        let pid = patient_id.clone();
+        let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+        super::invalidate_med_lab_cache(&state, &patient_id).await;
+    }
+
+    Ok(Json(ApiResponse::ok_msg("删除成功")))
+}
+
+pub async fn batch_delete_reports(
+    State(state): State<AppState>,
+    Json(req): Json<BatchDeleteReportsReq>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let ids: Vec<String> = req
+        .ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Err(AppError::validation("请选择要删除的报告"));
+    }
+
+    let db = state.db.clone();
+    let ids_for_delete = ids.clone();
+    let patient_ids = run_blocking(move || db.delete_reports_with_cleanup(&ids_for_delete)).await?;
+
+    for patient_id in patient_ids {
+        let db = state.db.clone();
+        let pid = patient_id.clone();
+        let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+        super::invalidate_med_lab_cache(&state, &patient_id).await;
     }
 
     Ok(Json(ApiResponse::ok_msg("删除成功")))
@@ -184,6 +220,10 @@ pub async fn update_report(
             let db = state.db.clone();
             let rid = id.clone();
             let _ = run_blocking(move || db.delete_interpretation(&rid)).await;
+            let db = state.db.clone();
+            let pid = report.patient_id.clone();
+            let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+            super::invalidate_med_lab_cache(&state, &report.patient_id).await;
             // Log changes
             if !changes.is_empty() {
                 let changed_fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
@@ -254,6 +294,7 @@ pub async fn create_test_item(
     };
     let db = state.db.clone();
     let _ = run_blocking(move || db.create_edit_log(&log)).await;
+    super::invalidate_med_lab_cache(&state, &report.patient_id).await;
     Ok(Json(ApiResponse::ok(item, "创建成功")))
 }
 
@@ -366,20 +407,19 @@ pub async fn update_test_item(
     let rid = item.report_id.clone();
     let _ = run_blocking(move || db.delete_interpretation(&rid)).await;
 
+    let db = state.db.clone();
+    let rid = item.report_id.clone();
+    let report = run_blocking(move || db.get_report(&rid)).await?;
+    let patient_id = report.as_ref().map(|r| r.patient_id.clone()).unwrap_or_default();
+    if !patient_id.is_empty() {
+        let db = state.db.clone();
+        let pid = patient_id.clone();
+        let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
+        super::invalidate_med_lab_cache(&state, &patient_id).await;
+    }
+
     // Log changes
     if !changes.is_empty() {
-        let db = state.db.clone();
-        let rid = item.report_id.clone();
-        let report = run_blocking(move || db.get_report(&rid)).await?;
-        let patient_id = report.map(|r| r.patient_id).unwrap_or_default();
-
-        // Invalidate risk prediction cache
-        if !patient_id.is_empty() {
-            let db = state.db.clone();
-            let pid = patient_id.clone();
-            let _ = run_blocking(move || db.delete_risk_prediction(&pid)).await;
-        }
-
         let changed_fields: Vec<&str> = changes.iter().map(|c| c.field.as_str()).collect();
         let summary = format!("修改了检验项目「{}」的{}", item.name, changed_fields.join("、"));
         let log = EditLog {
@@ -432,7 +472,7 @@ pub async fn delete_test_item_handler(
     let log = EditLog {
         id: Uuid::new_v4().to_string(),
         report_id: item.report_id.clone(),
-        patient_id,
+        patient_id: patient_id.clone(),
         action: "delete".to_string(),
         target_type: "test_item".to_string(),
         target_id: item.id.clone(),
@@ -444,6 +484,9 @@ pub async fn delete_test_item_handler(
     };
     let db = state.db.clone();
     let _ = run_blocking(move || db.create_edit_log(&log)).await;
+    if !patient_id.is_empty() {
+        super::invalidate_med_lab_cache(&state, &patient_id).await;
+    }
 
     Ok(Json(ApiResponse::ok_msg("删除成功")))
 }
