@@ -80,7 +80,7 @@ export default function MedLabCorrelation() {
         </Card>
       </Show>
 
-      <Show when={!data.loading && !refreshing() && data() && !data.error}>
+      <Show when={!data.loading && !refreshing() && !data.error && data()}>
         {(result) => (
           <Show
             when={result().correlations.length > 0}

@@ -50,12 +50,15 @@ export default function RiskPredictionPage() {
   const [refreshing, setRefreshing] = createSignal(false)
   const [prediction, setPrediction] = createSignal<RiskPrediction | null>(null)
 
+  const [initialError, setInitialError] = createSignal<string | null>(null)
   const [initialPrediction] = createResource(
     () => params.id,
     async (id) => {
       try {
+        setInitialError(null)
         return await api.riskPrediction.get(id)
-      } catch {
+      } catch (e: unknown) {
+        setInitialError(getErrorMessage(e) || '加载预测数据失败')
         return null
       }
     }
@@ -93,7 +96,7 @@ export default function RiskPredictionPage() {
         </Show>
 
         {/* 加载失败 */}
-        <Show when={initialPrediction.error && !prediction()}>
+        <Show when={initialError() && !prediction()}>
           <Card variant="elevated">
             <CardBody class="p-8 text-center">
               <div class="w-12 h-12 mx-auto rounded-full bg-error/10 flex items-center justify-center mb-3">
@@ -102,7 +105,7 @@ export default function RiskPredictionPage() {
                 </svg>
               </div>
               <p class="text-sm font-medium text-error mb-1">加载预测数据失败</p>
-              <p class="text-xs text-content-tertiary mb-4">{String(initialPrediction.error)}</p>
+              <p class="text-xs text-content-tertiary mb-4">{initialError()}</p>
               <Button variant="outline" size="sm" onClick={handleRefresh}>重试</Button>
             </CardBody>
           </Card>

@@ -16,7 +16,7 @@ impl TrackedCache {
         }
     }
 
-    pub async fn get(&self, key: &String) -> Option<String> {
+    pub async fn get(&self, key: &str) -> Option<String> {
         let result = self.inner.get(key).await;
         if result.is_some() {
             metrics::counter!("llm_cache_hits", "cache" => self.name).increment(1);
@@ -30,7 +30,7 @@ impl TrackedCache {
         self.inner.insert(key, value).await;
     }
 
-    pub async fn invalidate(&self, key: &String) {
+    pub async fn invalidate(&self, key: &str) {
         self.inner.invalidate(key).await;
     }
 

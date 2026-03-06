@@ -188,12 +188,10 @@ pub async fn get_correlation(
                 continue;
             }
 
-            let trend = if change_pct > 10.0 {
+            let trend = if change_pct > 0.0 {
                 "worsened"
-            } else if change_pct < -10.0 {
-                "improved"
             } else {
-                "unchanged"
+                "improved"
             };
 
             affected_items.push(AffectedItem {

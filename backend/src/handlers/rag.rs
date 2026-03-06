@@ -316,7 +316,13 @@ pub async fn query_rag(
     // Compute similarities and get top_k
     let mut scored: Vec<(f32, String, String)> = Vec::with_capacity(rows.len());
     for (chunk_type, content, embedding_json) in &rows {
-        let emb: Vec<f32> = serde_json::from_str(embedding_json).unwrap_or_default();
+        let emb: Vec<f32> = match serde_json::from_str(embedding_json) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("RAG embedding parse failed for chunk: {}", e);
+                continue;
+            }
+        };
         if emb.is_empty() {
             continue;
         }
@@ -324,7 +330,7 @@ pub async fn query_rag(
         scored.push((score, chunk_type.clone(), content.clone()));
     }
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(req.top_k);
+    scored.truncate(req.top_k.min(20));
 
     // Build context and sources
     let context: String = scored

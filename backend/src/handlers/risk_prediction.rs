@@ -32,11 +32,16 @@ pub async fn get_risk_prediction(
         if let Some((content, created_at)) = run_blocking(move || db.get_risk_prediction(&pid)).await? {
             // 检查是否在7天内
             if is_within_days(&created_at, 7) {
-                let mut data: serde_json::Value = serde_json::from_str(&content)
-                    .unwrap_or_else(|_| serde_json::json!({"error": "缓存解析失败"}));
-                data["cached"] = serde_json::json!(true);
-                data["generated_at"] = serde_json::json!(created_at);
-                return Ok(Json(ApiResponse::ok(data, "查询成功（缓存）")));
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(mut data) => {
+                        data["cached"] = serde_json::json!(true);
+                        data["generated_at"] = serde_json::json!(created_at);
+                        return Ok(Json(ApiResponse::ok(data, "查询成功（缓存）")));
+                    }
+                    Err(e) => {
+                        tracing::warn!("risk_prediction cache parse failed: {}", e);
+                    }
+                }
             }
         }
     }
@@ -93,13 +98,17 @@ pub async fn get_risk_prediction(
     let db = state.db.clone();
     let pid = patient_id.clone();
     let json_to_save = json_str.clone();
-    let _ = run_blocking(move || db.save_risk_prediction(&pid, &json_to_save)).await;
+    if let Err(e) = run_blocking(move || db.save_risk_prediction(&pid, &json_to_save)).await {
+        tracing::warn!("risk_prediction save failed: {}", e);
+    }
 
     // 更新患者风险字段
     let db = state.db.clone();
     let pid = patient_id.clone();
     let rl = risk_level.clone();
-    let _ = run_blocking(move || db.update_patient_risk_level(&pid, &rl)).await;
+    if let Err(e) = run_blocking(move || db.update_patient_risk_level(&pid, &rl)).await {
+        tracing::warn!("risk_prediction update_patient_risk_level failed: {}", e);
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     data["cached"] = serde_json::json!(false);

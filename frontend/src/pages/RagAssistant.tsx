@@ -1,7 +1,7 @@
 import { createSignal, createResource, Show, For } from 'solid-js'
 import { useParams } from '@solidjs/router'
 import { Button, Input, Spinner, useToast } from '@/components'
-import { api } from '@/api/client'
+import { api, getErrorMessage } from '@/api/client'
 import type { RagMessage } from '@/api/types'
 
 export default function RagAssistant() {
@@ -30,8 +30,8 @@ export default function RagAssistant() {
       const result = await api.rag.build(params.id)
       toast('success', `知识库已构建，共索引 ${result.chunks_indexed} 个数据块`)
       refetchStatus()
-    } catch (e: any) {
-      toast('error', e.message || '构建失败')
+    } catch (e: unknown) {
+      toast('error', getErrorMessage(e) || '构建失败')
     } finally {
       setBuilding(false)
     }
@@ -52,8 +52,8 @@ export default function RagAssistant() {
         ...m,
         { role: 'assistant', content: result.answer, sources: result.sources },
       ])
-    } catch (e: any) {
-      toast('error', '查询失败：' + (e.message || '未知错误'))
+    } catch (e: unknown) {
+      toast('error', '查询失败：' + (getErrorMessage(e) || '未知错误'))
     } finally {
       setQuerying(false)
       setTimeout(scrollToBottom, 50)
@@ -77,7 +77,10 @@ export default function RagAssistant() {
             when={!status.loading}
             fallback={<p class="text-sm text-content-secondary">加载中...</p>}
           >
-            <Show when={status()}>
+            <Show when={status.error}>
+              <p class="text-sm text-error">加载知识库状态失败</p>
+            </Show>
+            <Show when={!status.error && status()}>
               <p class="text-sm text-content-secondary">
                 知识库：{status()!.indexed_chunks} 个数据块
                 {status()!.last_built

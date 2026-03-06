@@ -16,6 +16,12 @@ export default function PatientExpenses(props: Props) {
   const [deleteExpenseId, setDeleteExpenseId] = createSignal<string | null>(null)
   const [deletingExpense, setDeletingExpense] = createSignal(false)
 
+  const sortedExpenses = createMemo(() =>
+    [...(props.expenses() ?? [])].sort((a, b) =>
+      b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at)
+    )
+  )
+
   const duplicateExpenseDates = createMemo(() => {
     const list = props.expenses() ?? []
     const counts: Record<string, number> = {}
@@ -69,7 +75,7 @@ export default function PatientExpenses(props: Props) {
             }
           >
             <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
-              <For each={[...(props.expenses() ?? [])].sort((a, b) => b.expense_date.localeCompare(a.expense_date) || b.created_at.localeCompare(a.created_at))}>
+              <For each={sortedExpenses()}>
                 {(expense) => (
                   <A
                     href={`/expenses/${expense.id}`}
